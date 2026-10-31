@@ -443,9 +443,46 @@ def audit_logs(db: Session = Depends(get_db), action: str | None = Query(default
         stmt = stmt.where(AuditLog.entity_id == entity_id)
     total = db.scalar(select(func.count()).select_from(stmt.subquery()))
     rows = db.scalars(stmt.order_by(AuditLog.created_at.desc()).limit(limit).offset(offset)).all()
-    return {"total": total, "items": [{"id": r.id, "actor_id": r.actor_id, "actor_label": r.actor_label, "action": r.action,
-                                        "entity_type": r.entity_type, "entity_id": r.entity_id, "details": r.details,
-                                        "request_id": r.request_id, "created_at": r.created_at} for r in rows]}
+    names = _audit_names(db, rows)
+    return {"total": total, "items": [{"id": r.id, "actor_id": r.actor_id, "actor_label": r.actor_label,
+                                        "actor_name": names.get(("user", str(r.actor_id))) if r.actor_id else None,
+                                        "action": r.action, "entity_type": r.entity_type, "entity_id": r.entity_id,
+                                        "entity_name": names.get((r.entity_type, str(r.entity_id))) if r.entity_id else None,
+                                        "details": r.details, "request_id": r.request_id, "created_at": r.created_at}
+                                       for r in rows]}
+
+
+def _audit_names(db: Session, rows) -> dict[tuple[str, str], str]:
+    """Readable names for audit actors and entities, looked up in one query per entity type."""
+    wanted: dict[str, set[uuid.UUID]] = {}
+
+    def want(kind: str, value) -> None:
+        try:
+            wanted.setdefault(kind, set()).add(uuid.UUID(str(value)))
+        except (ValueError, TypeError):
+            pass
+
+    for r in rows:
+        if r.actor_id:
+            want("user", r.actor_id)
+        if r.entity_id and r.entity_type:
+            want(r.entity_type, r.entity_id)
+    out: dict[tuple[str, str], str] = {}
+    simple = {"user": (User, lambda u: f"{u.full_name} ({u.role.value.replace('_', ' ').title()})"),
+              "department": (Department, lambda d: d.name),
+              "jurisdiction": (Jurisdiction, lambda j: j.name),
+              "sensitive_location": (SensitiveLocation, lambda x: x.label),
+              "complaint": (Complaint, lambda c: f"{c.reference_id} · {c.title}")}
+    for kind, (model, fmt) in simple.items():
+        if wanted.get(kind):
+            for obj in db.scalars(select(model).where(model.id.in_(wanted[kind]))):
+                out[(kind, str(obj.id))] = fmt(obj)
+    if wanted.get("responsibility_rule"):
+        for rule, dept in db.execute(select(ResponsibilityRule, Department.name)
+                                     .join(Department, Department.id == ResponsibilityRule.department_id)
+                                     .where(ResponsibilityRule.id.in_(wanted["responsibility_rule"]))):
+            out[("responsibility_rule", str(rule.id))] = f"{rule.category.value.replace('_', ' ').title()} → {dept}"
+    return out
 
 
 @router.get("/system")

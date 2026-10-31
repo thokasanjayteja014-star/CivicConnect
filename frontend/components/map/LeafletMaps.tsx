@@ -84,17 +84,20 @@ export function MarkersMap({ points, height = 420 }: { points: MapPoint[]; heigh
   );
 }
 
-export function PolygonDrawer({ vertices, onAdd, existing = [], height = 380 }: {
+export function PolygonDrawer({ vertices, onAdd, existing = [], height = 380, focus = null }: {
   vertices: [number, number][];
   onAdd: (lat: number, lng: number) => void;
   existing?: { name: string; rings: [number, number][][] }[];
   height?: number;
+  /** Map centre to fly to, e.g. after an address search. */
+  focus?: [number, number] | null;
 }) {
   const dv = defaultView();
   return (
     <MapContainer center={vertices[0] || dv.center} zoom={vertices.length ? 14 : dv.zoom} style={{ height }} className="z-0 w-full rounded-md">
       <TileLayer url={TILE} attribution={ATTR} />
       <ClickHandler onClick={onAdd} />
+      <Recenter center={focus} zoom={16} />
       {existing.map((e, i) => e.rings.map((ring, k) => (
         <Polygon key={`${i}-${k}`} positions={ring} pathOptions={{ color: "#64748b", weight: 1, fillOpacity: 0.08 }}>
           <Popup>{e.name}</Popup>

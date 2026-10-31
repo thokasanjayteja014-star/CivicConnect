@@ -103,6 +103,9 @@ class OpenAICompatibleProvider(AIProvider):
     def complete_structured(self, system_prompt: str, user_prompt: str, images: list) -> Any:
         content: Any = user_prompt
         usable = [m for m in images if m.mime_type in self.VISION_MIME_TYPES]
+        limit = self.settings.AI_MAX_IMAGES
+        if limit and limit > 0:
+            usable = usable[:limit]
         if usable:
             labels = [f"{m.media_id} (video frame)" if m.media_type == "VIDEO" else m.media_id for m in usable]
             content = [{"type": "text", "text": user_prompt + "\nAttached images (media_id in order): "
@@ -118,6 +121,8 @@ class OpenAICompatibleProvider(AIProvider):
             "response_format": {"type": "json_object"},
             "temperature": 0,
         }
+        if self.settings.AI_REASONING_EFFORT:
+            body["reasoning_effort"] = self.settings.AI_REASONING_EFFORT
         data = self._post("/chat/completions", json=body)
         try:
             return data["choices"][0]["message"]["content"]

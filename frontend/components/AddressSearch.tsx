@@ -17,8 +17,7 @@ export function AddressSearch({ onPick }: { onPick: (p: Place) => void }) {
   const [results, setResults] = useState<Place[] | null>(null);
   const [error, setError] = useState("");
 
-  async function search(e?: React.FormEvent) {
-    e?.preventDefault();
+  async function search() {
     if (q.trim().length < 3) return;
     setBusy(true); setError(""); setResults(null);
     try {
@@ -33,12 +32,13 @@ export function AddressSearch({ onPick }: { onPick: (p: Place) => void }) {
 
   return (
     <div className="space-y-2">
-      <form onSubmit={search} className="flex gap-2" role="search">
+      <div className="flex gap-2" role="search">
         <label htmlFor="addr-search" className="sr-only">{t("Search for an address or landmark")}</label>
         <input id="addr-search" className={inputCls} value={q} onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); search(); } }}
           placeholder={t("Search for an address or landmark")} />
-        <Button type="submit" variant="secondary" loading={busy} disabled={q.trim().length < 3}><Search className="h-4 w-4" /> {t("Search")}</Button>
-      </form>
+        <Button type="button" variant="secondary" loading={busy} disabled={q.trim().length < 3} onClick={search}><Search className="h-4 w-4" /> {t("Search")}</Button>
+      </div>
       {error && <p className="text-xs text-red-700">{error}</p>}
       {results && results.length === 0 && <p className="text-xs text-slate-600">{t("No places found. Try a nearby landmark or pick the spot on the map.")}</p>}
       {results && results.length > 0 && (

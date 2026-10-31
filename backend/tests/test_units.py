@@ -394,3 +394,38 @@ def test_grok_adapter_invalid_json_rejected(monkeypatch):
     finally:
         monkeypatch.undo()
         gs.cache_clear()
+
+
+def test_groq_qwen_image_cap_reasoning_and_think_stripping(monkeypatch):
+    import json as _json
+    import httpx
+    from app.ai import ai_service
+    from app.ai.ai_service import MediaInput
+    gs = _grok_env(monkeypatch)
+    monkeypatch.setenv("AI_PROVIDER", "groq")
+    monkeypatch.setenv("AI_MODEL_NAME", "qwen/qwen3.8-27b")
+    monkeypatch.setenv("AI_MAX_IMAGES", "3")
+    monkeypatch.setenv("AI_REASONING_EFFORT", "none")
+    gs.cache_clear()
+    seen = {}
+
+    def fake_post(url, headers, timeout, json):
+        seen.update(url=url, body=json)
+        content = "<think>looking at it</think>\n```json\n" + _json.dumps(VALID_AI) + "\n```"
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+    monkeypatch.setattr(httpx, "post", fake_post)
+    try:
+        from app.core.config import get_settings
+        from app.ai.providers import PROVIDERS
+        prov = PROVIDERS["groq"](get_settings())
+        imgs = [MediaInput(f"m{i}", "IMAGE", "image/jpeg", b"x") for i in range(5)]
+        raw = prov.complete_structured("sys", "user", imgs)
+        body = seen["body"]
+        assert seen["url"] == "https://api.groq.com/openai/v1/chat/completions"
+        assert body["reasoning_effort"] == "none"
+        assert sum(1 for c in body["messages"][1]["content"] if c["type"] == "image_url") == 3
+        a = ai_service.validate_ai_output(raw)
+        assert a.suggested_category.value == "ROAD_INFRASTRUCTURE"
+    finally:
+        monkeypatch.undo()
+        gs.cache_clear()

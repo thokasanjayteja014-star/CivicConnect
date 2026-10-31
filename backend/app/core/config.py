@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     AI_PROVIDER_API_KEY: str = ""
     AI_MODEL_NAME: str = ""
     AI_BASE_URL: str = ""  # optional override of the provider endpoint
+    AI_MAX_IMAGES: int = 0  # max images per AI request; 0 = no limit (Groq qwen vision allows 3)
+    AI_REASONING_EFFORT: str = ""  # sent as reasoning_effort when set (e.g. "none" for Groq qwen models)
     VISION_MODEL_NAME: str = ""
     SPEECH_MODEL_NAME: str = ""
     EMBEDDING_MODEL_NAME: str = ""

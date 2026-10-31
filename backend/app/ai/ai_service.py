@@ -19,6 +19,7 @@ from __future__ import annotations
 import concurrent.futures
 import io
 import json
+import re
 import logging
 import shutil
 import subprocess
@@ -188,6 +189,13 @@ def validate_ai_output(raw: Any, expected_media_ids: set[str] | None = None) -> 
     Raises AIUnavailable('AI_INVALID_OUTPUT') if invalid; invalid output is never stored.
     """
     if isinstance(raw, (str, bytes)):
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", "replace")
+        # Some reasoning models prepend <think>...</think> or wrap JSON in a code fence.
+        raw = re.sub(r"(?s)<think>.*?</think>", "", raw).strip()
+        fence = re.match(r"(?s)^```(?:json)?\s*(.*?)\s*```$", raw)
+        if fence:
+            raw = fence.group(1)
         try:
             raw = json.loads(raw)
         except (ValueError, TypeError):

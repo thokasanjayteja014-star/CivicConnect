@@ -500,8 +500,13 @@ def test_admin_config_audited(client, admin, db):
     staff = client.post("/api/admin/users", json={"full_name": "New Officer", "email": "newofficer@example.com",
                                                   "password": "password-123", "role": "OFFICER"}, headers=auth(at))
     assert staff.status_code == 422  # department required
+    dept = client.post("/api/admin/departments", json={"name": "Roads Audit Dept"}, headers=auth(at))
+    assert dept.status_code == 201
     logs = client.get("/api/admin/audit-logs", headers=auth(at)).json()
     assert any(l["action"] == "PRIORITY_CONFIG_CHANGED" for l in logs["items"])
+    created = next(l for l in logs["items"] if l["action"] == "DEPARTMENT_CREATED")
+    assert created["entity_name"] == "Roads Audit Dept"
+    assert created["actor_name"] and "(System Admin)" in created["actor_name"]
 
 
 def test_error_shape(client):

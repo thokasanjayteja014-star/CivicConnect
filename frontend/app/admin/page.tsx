@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState, type ReactNode } from "react";
 import { useRequireRole } from "@/components/AuthProvider";
 import { CATEGORY_LABEL, ROLE_LABEL, fmtDate } from "@/components/labels";
+import { AddressSearch } from "@/components/AddressSearch";
 import { PolygonDrawer } from "@/components/map";
 import { Badge, Button, Card, EmptyState, ErrorBox, Field, Notice, PageHeader, Spinner, Stat, cx, inputCls } from "@/components/ui";
 import { ComplaintTable } from "@/features/complaints";
@@ -11,22 +12,31 @@ import { useApi } from "@/hooks/useApi";
 import { api } from "@/services/api";
 import { CATEGORIES } from "@/types";
 
-const TABS = ["Overview", "Routing queue", "AI & safety review", "Duplicates", "Departments", "Jurisdictions", "Responsibilities",
-  "Sensitive locations", "Users & officers", "Priority config", "Lifecycle", "Audit log"] as const;
-type Tab = (typeof TABS)[number];
+// Everyday work first, one-time setup next; technical settings stay behind "Advanced".
+const MAIN_TABS = ["Overview", "Routing queue", "AI & safety review", "Duplicates", "Users & officers", "Departments",
+  "Jurisdictions", "Responsibilities", "Sensitive locations", "Activity log"] as const;
+const ADVANCED_TABS = ["Priority config", "Lifecycle"] as const;
+type Tab = (typeof MAIN_TABS)[number] | (typeof ADVANCED_TABS)[number];
 
 export default function AdminPage() {
   const { allowed } = useRequireRole(["SYSTEM_ADMIN"]);
   const [tab, setTab] = useState<Tab>("Overview");
+  const [advanced, setAdvanced] = useState(false);
   if (!allowed) return <Spinner />;
+  const tabBtn = (t: Tab) => (
+    <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}
+      className={cx("rounded-t px-3 py-2 text-sm", tab === t ? "border border-b-white border-slate-200 bg-white font-medium text-navy-900" : "text-slate-600 hover:text-navy-800")}>{t}</button>
+  );
   return (
     <div className="space-y-6">
-      <PageHeader title="Administration" subtitle="Configuration entered here is administrator-maintained prototype configuration unless marked with a verified source." />
+      <PageHeader title="Administration" subtitle="Manage departments, officers and complaints that need an administrator. Items marked prototype are demo configuration, not verified official data." />
       <div className="flex flex-wrap gap-1 border-b border-slate-200" role="tablist">
-        {TABS.map((t) => (
-          <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}
-            className={cx("rounded-t px-3 py-2 text-sm", tab === t ? "border border-b-white border-slate-200 bg-white font-medium text-navy-900" : "text-slate-600 hover:text-navy-800")}>{t}</button>
-        ))}
+        {MAIN_TABS.map(tabBtn)}
+        {(advanced || (ADVANCED_TABS as readonly string[]).includes(tab)) && ADVANCED_TABS.map(tabBtn)}
+        <button type="button" onClick={() => { if (advanced && (ADVANCED_TABS as readonly string[]).includes(tab)) setTab("Overview"); setAdvanced(!advanced); }}
+          className="ml-auto px-3 py-2 text-xs text-slate-500 underline hover:text-navy-800" aria-expanded={advanced}>
+          {advanced ? "Hide advanced settings" : "Advanced settings"}
+        </button>
       </div>
       {tab === "Overview" && <Overview />}
       {tab === "Routing queue" && <RoutingQueue />}
@@ -39,7 +49,7 @@ export default function AdminPage() {
       {tab === "Users & officers" && <Users />}
       {tab === "Priority config" && <PriorityConfig />}
       {tab === "Lifecycle" && <Lifecycle />}
-      {tab === "Audit log" && <AuditLog />}
+      {tab === "Activity log" && <AuditLog />}
     </div>
   );
 }
@@ -228,6 +238,7 @@ function Jurisdictions() {
   const depts = useApi<any[]>("/api/admin/departments");
   const [vertices, setVertices] = useState<[number, number][]>([]);
   const [geojson, setGeojson] = useState("");
+  const [focus, setFocus] = useState<[number, number] | null>(null);
   const [form, setForm] = useState({ name: "", source_reference: "", is_prototype: true, department_ids: [] as string[], last_verified_at: "" });
   const s = useSubmit();
 
@@ -256,7 +267,8 @@ function Jurisdictions() {
           <Field label="Name" htmlFor="jn" required><input id="jn" className={inputCls} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
           <div>
             <p className="mb-1 text-sm font-medium text-slate-800">Boundary — click the map to add vertices ({vertices.length}) <button type="button" className="ml-2 text-xs text-teal-700 underline" onClick={() => setVertices([])}>clear</button></p>
-            <PolygonDrawer vertices={vertices} onAdd={(lat, lng) => setVertices((v) => [...v, [lat, lng]])} existing={existing} />
+            <div className="mb-2"><AddressSearch onPick={(p) => setFocus([p.latitude, p.longitude])} /></div>
+            <PolygonDrawer vertices={vertices} onAdd={(lat, lng) => setVertices((v) => [...v, [lat, lng]])} existing={existing} focus={focus} />
           </div>
           <Field label="…or paste GeoJSON (Polygon / MultiPolygon / Feature)" htmlFor="gj" hint="Prefer verified, appropriately licensed boundary data.">
             <textarea id="gj" rows={3} className={inputCls + " font-mono text-xs"} value={geojson} onChange={(e) => setGeojson(e.target.value)} />
@@ -341,8 +353,12 @@ function SensitiveLocations() {
         }, "Saved."); }}>
           <Feedback s={s} />
           <p className="text-xs text-slate-600">Used for the location-sensitivity (L) factor. Rubric: 76–100 verified sensitive location (school entrance, hospital access, critical facility); 51–75 high-use / vulnerable users.</p>
-          <PolygonDrawer vertices={pt ? [pt] : []} onAdd={(lat, lng) => setVertices([[lat, lng]])} height={260} />
-          <p className="text-xs text-slate-500">{pt ? `${pt[0].toFixed(5)}, ${pt[1].toFixed(5)}` : "Click the map to place the point."}</p>
+          <AddressSearch onPick={(p) => {
+            setVertices([[p.latitude, p.longitude]]);
+            if (!form.label.trim()) setForm({ ...form, label: p.display_name.split(",")[0].slice(0, 120) });
+          }} />
+          <PolygonDrawer vertices={pt ? [pt] : []} onAdd={(lat, lng) => setVertices([[lat, lng]])} height={260} focus={pt || null} />
+          <p className="text-xs text-slate-500">{pt ? `${pt[0].toFixed(5)}, ${pt[1].toFixed(5)} · click the map to adjust` : "Search for the place above, or click the map to place the point."}</p>
           <div className="grid grid-cols-2 gap-2">
             <Field label="Label" htmlFor="sl" required><input id="sl" className={inputCls} value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} /></Field>
             <Field label="Type" htmlFor="st"><select id="st" className={inputCls} value={form.location_type} onChange={(e) => setForm({ ...form, location_type: e.target.value })}>{["SCHOOL", "HOSPITAL", "CRITICAL_FACILITY", "TRANSIT_HUB", "MARKET", "OTHER"].map((t) => <option key={t}>{t}</option>)}</select></Field>
@@ -460,20 +476,40 @@ function Lifecycle() {
   );
 }
 
+function humanize(code: string) {
+  const t = code.replace(/_/g, " ").toLowerCase();
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+function auditSummary(l: any): string {
+  const d = l.details || {};
+  if (d.after && typeof d.after === "object") return "Updated";
+  const parts: string[] = [];
+  for (const k of ["name", "label", "role", "status", "to_status", "routing_status", "reason", "category"]) {
+    if (typeof d[k] === "string" && d[k]) parts.push(k === "name" || k === "label" ? d[k] : `${humanize(k)}: ${humanize(d[k])}`);
+  }
+  return parts.slice(0, 3).join(" · ");
+}
+
 function AuditLog() {
   const [action, setAction] = useState("");
   const q = useApi<any>(`/api/admin/audit-logs?limit=200${action ? `&action=${action}` : ""}`, [action]);
   return (
     <div className="space-y-3">
-      <input aria-label="Filter by action" className={inputCls + " w-72"} placeholder="Filter by action, e.g. STATUS_CHANGED" value={action} onChange={(e) => setAction(e.target.value.toUpperCase())} />
+      <p className="text-sm text-slate-600">Every change made in CivicConnect, who made it and when. Entries cannot be edited or deleted.</p>
+      <input aria-label="Filter by action" className={inputCls + " w-72"} placeholder="Filter by action, e.g. STATUS_CHANGED" value={action} onChange={(e) => setAction(e.target.value.toUpperCase().replace(/ /g, "_"))} />
       <Loadable q={q} empty={(d) => d.items.length === 0}>{(d) => (
         <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-          <table className="min-w-full text-xs">
-            <thead className="bg-slate-50 text-left uppercase text-slate-500"><tr><th className="p-2">Time</th><th>Actor</th><th>Action</th><th>Entity</th><th>Details</th></tr></thead>
+          <table className="min-w-full text-sm">
+            <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="p-2">When</th><th>Who</th><th>What</th><th>On</th><th>Details</th></tr></thead>
             <tbody className="divide-y divide-slate-100">{d.items.map((l: any) => (
-              <tr key={l.id} className="align-top"><td className="whitespace-nowrap p-2">{fmtDate(l.created_at)}</td><td className="font-mono">{l.actor_label}</td>
-                <td className="font-medium">{l.action}</td><td className="font-mono">{l.entity_type}:{l.entity_id?.slice(0, 8)}</td>
-                <td className="max-w-md truncate font-mono text-slate-500" title={JSON.stringify(l.details)}>{JSON.stringify(l.details)}</td></tr>
+              <tr key={l.id} className="align-top">
+                <td className="whitespace-nowrap p-2 text-slate-600">{fmtDate(l.created_at)}</td>
+                <td className="pr-3">{l.actor_name || (l.actor_label?.startsWith("system") ? "System" : l.actor_label)}</td>
+                <td className="pr-3 font-medium">{humanize(l.action)}</td>
+                <td className="pr-3">{l.entity_name || <span className="text-slate-500">{humanize(l.entity_type || "")}</span>}</td>
+                <td className="max-w-xs truncate pr-2 text-slate-500" title={JSON.stringify(l.details)}>{auditSummary(l)}</td>
+              </tr>
             ))}</tbody>
           </table>
         </div>
