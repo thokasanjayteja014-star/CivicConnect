@@ -1,0 +1,71 @@
+# Render Blueprint for the CivicConnect backend (free plan).
+# Render dashboard -> New -> Blueprint -> pick this repository. Fill the "sync: false" values when asked.
+services:
+  - type: web
+    name: civicconnect-api
+    runtime: docker
+    plan: free
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL          # Supabase -> Connect -> Session pooler URI
+        sync: false
+      - key: AUTH_SECRET
+        generateValue: true
+      - key: FRONTEND_ORIGIN       # your Vercel URL, e.g. https://civicconnect.vercel.app
+        sync: false
+      - key: BACKEND_BASE_URL      # this service's URL, e.g. https://civicconnect-api.onrender.com
+        sync: false
+      - key: MEDIA_STORAGE_ENDPOINT  # https://<project-ref>.supabase.co/storage/v1/s3
+        sync: false
+      - key: MEDIA_STORAGE_REGION
+        sync: false
+      - key: MEDIA_STORAGE_BUCKET
+        value: civicconnect-media
+      - key: MEDIA_STORAGE_ACCESS_KEY
+        sync: false
+      - key: MEDIA_STORAGE_SECRET_KEY
+        sync: false
+      - key: AI_PROVIDER
+        value: xai
+      - key: AI_PROVIDER_API_KEY
+        sync: false
+      - key: AI_MODEL_NAME
+        value: grok-4
+      - key: SPEECH_PROVIDER
+        sync: false
+      - key: SPEECH_API_KEY
+        sync: false
+      - key: SPEECH_MODEL_NAME
+        sync: false
+      - key: EMAIL_PROVIDER
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: BREVO_API_KEY
+        sync: false
+      - key: SMS_PROVIDER
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        sync: false
+      - key: GEOCODER_CONTACT_EMAIL
+        sync: false
+      - key: BOOTSTRAP_ADMIN_EMAIL
+        sync: false
+      - key: BOOTSTRAP_ADMIN_NAME
+        sync: false
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        sync: false

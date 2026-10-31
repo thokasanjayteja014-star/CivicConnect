@@ -1,0 +1,44 @@
+# Local stack: PostGIS + backend + frontend. Uploaded media is kept in a private
+# Docker volume (local storage). Hosted deployments use S3-compatible storage
+# (e.g. Supabase Storage) via MEDIA_STORAGE_* instead; see docs/DEPLOY_FREE.md.
+# Set AUTH_SECRET in a root .env file first; see README.
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: civic
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-civic}
+      POSTGRES_DB: civicconnect
+    volumes: [dbdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U civic -d civicconnect"]
+      interval: 5s
+      retries: 20
+
+  backend:
+    build: ./backend
+    depends_on:
+      db: {condition: service_healthy}
+    # Everything in the root .env (AI, email, SMS, push, geocoding...) is passed through;
+    # the values below override it for the local Docker network.
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql+psycopg://civic:${POSTGRES_PASSWORD:-civic}@db:5432/civicconnect
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET}
+      FRONTEND_ORIGIN: http://localhost:3000
+      BACKEND_BASE_URL: http://localhost:8000
+      MEDIA_STORAGE_ENDPOINT: ""
+      MEDIA_LOCAL_DIR: /app/var/media
+    volumes: [mediadata:/app/var/media]
+    ports: ["8000:8000"]
+
+  frontend:
+    build:
+      context: ./frontend
+      args: {NEXT_PUBLIC_API_BASE_URL: "http://localhost:8000"}
+    depends_on: [backend]
+    ports: ["3000:3000"]
+
+volumes:
+  dbdata:
+  mediadata:
