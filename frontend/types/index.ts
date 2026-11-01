@@ -81,7 +81,7 @@ export interface ComplaintDetail extends ComplaintListItem {
   priority: {
     priority_score: number | null; priority_level: PriorityLevel | null; priority_assessment_status: string;
     needs_prompt_review: boolean; factors: Record<string, Factor> | null; weights: Record<string, number> | null;
-    review_reasons: string[]; rubric_version: string | null; assessed_by: string | null; assessed_at: string | null; disclaimer: string;
+    review_reasons: string[]; community?: { other_reporters: number; boost: number; base_score: number | null; explanation: string } | null; rubric_version: string | null; assessed_by: string | null; assessed_at: string | null; disclaimer: string;
   };
   routing: {
     routing_status: RoutingStatus; department: ComplaintListItem["department"]; message: string | null; explanation: string | null;

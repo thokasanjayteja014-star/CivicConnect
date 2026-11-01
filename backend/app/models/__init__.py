@@ -584,7 +584,11 @@ class PublicIssue(Base):
     impact_level: Mapped[str | None] = mapped_column(String(20))  # LOW / MODERATE / HIGH (staff assessment)
     impact_assessment: Mapped[str | None] = mapped_column(Text)
     resolution_info: Mapped[str | None] = mapped_column(Text)
-    created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    # None when CivicConnect created the issue automatically from a cluster of complaints.
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+    auto_generated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    auto_publish_at: Mapped[datetime | None] = mapped_column(TS)
+    published_automatically: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     verified_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     verified_at: Mapped[datetime | None] = mapped_column(TS)
     published_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
@@ -602,7 +606,7 @@ class PublicIssueComplaint(Base):
     id: Mapped[uuid.UUID] = _pk()
     issue_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("public_issues.id", ondelete="CASCADE"), index=True)
     complaint_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("complaints.id"))
-    linked_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    linked_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))  # None = automatic
     linked_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
 
 
@@ -613,5 +617,5 @@ class PublicIssueUpdate(Base):
     issue_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("public_issues.id", ondelete="CASCADE"), index=True)
     message: Mapped[str] = mapped_column(Text)
     progress: Mapped[PublicIssueProgress | None] = mapped_column(_enum(PublicIssueProgress))
-    author_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    author_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))  # None = automatic
     created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)

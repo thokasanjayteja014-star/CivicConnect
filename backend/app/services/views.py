@@ -138,6 +138,7 @@ def priority_view(db: Session, c: Complaint) -> dict:
         "factors": (pa.factor_evidence.get("factors") if pa else None),
         "weights": (pa.factor_evidence.get("weights") if pa else None),
         "review_reasons": (pa.factor_evidence.get("review_reasons") if pa else []),
+        "community": (pa.factor_evidence.get("community") if pa else None),
         "rubric_version": pa.rubric_version if pa else None,
         "assessed_by": ("Authorized staff" if pa and pa.assessed_by.startswith("user:") else "Priority engine") if pa else None,
         "assessed_at": pa.created_at if pa else None,

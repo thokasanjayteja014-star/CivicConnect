@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # Optional separate speech-to-text provider (e.g. groq whisper while AI_PROVIDER=xai).
     SPEECH_PROVIDER: str = ""
     SPEECH_API_KEY: str = ""
+    # Optional separate embedding provider for meaning-based duplicate detection
+    # (gemini, jina or openai), e.g. EMBEDDING_PROVIDER=gemini, EMBEDDING_MODEL_NAME=gemini-embedding-001.
+    EMBEDDING_PROVIDER: str = ""
+    EMBEDDING_API_KEY: str = ""
     AI_TIMEOUT_SECONDS: float = 30.0
     AI_MAX_RETRIES: int = 2
 
@@ -92,7 +96,7 @@ class Settings(BaseSettings):
 
     # Duplicate detection (prototype thresholds, configurable)
     DUPLICATE_RADIUS_M: float = 100.0
-    DUPLICATE_TEXT_SIMILARITY: float = 0.85
+    DUPLICATE_TEXT_SIMILARITY: float = 0.80  # embedding cosine; cross-language paraphrases score a little lower
     DUPLICATE_LEXICAL_SIMILARITY: float = 0.35
     DUPLICATE_WINDOW_DAYS: int = 30
     DUPLICATE_IMAGE_MAX_DISTANCE: int = 10  # max dHash Hamming distance (of 64 bits) for "similar photo"

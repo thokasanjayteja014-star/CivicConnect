@@ -38,7 +38,9 @@ def test_demo_isolation_and_reset(client, configured, db):
 
     # demo data is visible only in demo; production data is invisible in demo
     ov = client.get("/api/admin/overview", headers={**auth(tokens["SYSTEM_ADMIN"]), **DEMO}).json()
-    assert ov["totals"]["total"] == 12 and ov["totals"]["escalated"] >= 1
+    issues = client.get("/api/authority/public-issues", headers={**auth(tokens["SYSTEM_ADMIN"]), **DEMO}).json()
+    assert any(i["auto_generated"] and i["status"] == "DRAFT" for i in issues)
+    assert ov["totals"]["total"] == 15 and ov["totals"]["escalated"] >= 1
     assert ov["totals"]["awaiting_assignment"] >= 1  # Ward 4 has no officer
     assert prod["reference_id"] not in str(client.get("/api/authority/complaints?limit=200",
                                                       headers={**auth(tokens["SYSTEM_ADMIN"]), **DEMO}).json())
@@ -60,6 +62,7 @@ def test_demo_isolation_and_reset(client, configured, db):
     assert client.post("/api/demo/reset").status_code == 403
     assert client.post("/api/demo/reset", headers=DEMO).status_code == 200
     t = _demo_login(client, "SYSTEM_ADMIN")
-    assert client.get("/api/admin/overview", headers={**auth(t), **DEMO}).json()["totals"]["total"] == 12
+    assert client.get("/api/admin/overview", headers={**auth(t), **DEMO}).json()["totals"]["total"] == 15
     assert db.scalar(select(func.count()).select_from(Complaint)) == prod_count
     assert client.get(f"/api/complaints/{prod['complaint_id']}", headers=auth(token)).status_code == 200
+

@@ -54,7 +54,15 @@ from app.models.enums import (
     RoutingStatus,
 )
 from app.notifications import notify, unit_staff_ids
-from app.priority.engine import DEFAULT_PRIORITY_CONFIG, FactorValue, assess_priority, validate_priority_config
+from app.priority.engine import (
+    DEFAULT_PRIORITY_CONFIG,
+    FactorValue,
+    assess_priority,
+    community_boost,
+    level_for_score,
+    round2,
+    validate_priority_config,
+)
 from app.routing.engine import (
     DepartmentFact,
     LeafFact,
@@ -173,6 +181,15 @@ def run_priority(
         overrides=carried,
     )
     f = result.factors
+    others = other_reporters(db, complaint)
+    boost = community_boost(others)
+    community = {"other_reporters": others, "boost": boost, "base_score": float(result.priority_score)
+                 if result.priority_score is not None else None,
+                 "explanation": (f"{others} other resident(s) reported the same problem nearby; +{boost:g} points."
+                                 if others else "No other residents have reported this problem yet.")}
+    if boost and result.priority_score is not None:
+        result.priority_score = round2(min(100.0, float(result.priority_score) + boost))
+        result.priority_level = level_for_score(float(result.priority_score), cfg["thresholds"])
     pa = PriorityAssessment(
         complaint_id=complaint.id,
         assessment_status=result.assessment_status,
@@ -187,6 +204,7 @@ def run_priority(
             "factors": {k: v.as_dict() for k, v in f.items()},
             "weights": cfg["weights"],
             "review_reasons": result.review_reasons,
+            "community": community,
             "config_version": version,
             "disclaimer": "Internal prototype prioritization heuristic, not an official government urgency standard.",
         },
@@ -200,6 +218,45 @@ def run_priority(
     complaint.priority_assessment_status = result.assessment_status
     complaint.needs_prompt_review = result.needs_prompt_review
     return pa
+
+
+def other_reporters(db: Session, complaint: Complaint) -> int:
+    """Distinct other citizens whose complaints are linked to this one as the same problem.
+
+    Suggested and confirmed links count; links a reviewer marked NOT_RELATED, rejected complaints and
+    repeat reports by the same citizen do not.
+    """
+    if complaint.id is None:
+        return 0
+    links = db.execute(select(ComplaintRelationship.source_complaint_id, ComplaintRelationship.related_complaint_id).where(
+        ComplaintRelationship.relationship_status != RelationshipStatus.NOT_RELATED,
+        (ComplaintRelationship.source_complaint_id == complaint.id)
+        | (ComplaintRelationship.related_complaint_id == complaint.id))).all()
+    ids = {b if a == complaint.id else a for a, b in links}
+    if not ids:
+        return 0
+    return db.scalar(select(func.count(func.distinct(Complaint.citizen_id))).where(
+        Complaint.id.in_(ids), Complaint.status != ComplaintStatus.REJECTED,
+        Complaint.citizen_id != complaint.citizen_id)) or 0
+
+
+def refresh_community_priority(db: Session, complaint_ids) -> None:
+    """Re-score open complaints whose number of independent reporters changed."""
+    from app.services import escalation  # local import: escalation is imported lazily here too
+    db.flush()
+    for cid in set(complaint_ids):
+        c = db.get(Complaint, cid)
+        if c is None or c.status in (ComplaintStatus.VERIFIED_RESOLVED, ComplaintStatus.REJECTED):
+            continue
+        latest = db.scalar(select(PriorityAssessment).where(PriorityAssessment.complaint_id == c.id)
+                           .order_by(PriorityAssessment.created_at.desc()))
+        stored = ((latest.factor_evidence or {}).get("community") or {}).get("other_reporters", 0) if latest else 0
+        if stored == other_reporters(db, c):
+            continue
+        before = c.priority_level
+        run_priority(db, c, assessed_by="system:community-reports")
+        if c.priority_level != before:
+            escalation.set_due_at(db, c)
 
 
 # ---------------- routing ----------------
@@ -528,6 +585,8 @@ def create_complaint(
     run_priority(db, complaint, assessed_by="system:priority-engine")
     routing = run_routing(db, complaint)
     related = run_duplicate_detection(db, complaint)
+    if related:
+        refresh_community_priority(db, [complaint.id] + [r.related_complaint_id for r in related])
 
     notify(
         db,

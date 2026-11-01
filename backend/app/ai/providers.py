@@ -157,10 +157,22 @@ def _openai(settings: Any) -> AIProvider:
     return OpenAICompatibleProvider(settings, "https://api.openai.com/v1", transcription=True, embeddings=True)
 
 
+def _gemini(settings: Any) -> AIProvider:
+    # Google's OpenAI-compatible endpoint (free API key from Google AI Studio).
+    return OpenAICompatibleProvider(settings, "https://generativelanguage.googleapis.com/v1beta/openai", embeddings=True)
+
+
+def _jina(settings: Any) -> AIProvider:
+    return OpenAICompatibleProvider(settings, "https://api.jina.ai/v1", embeddings=True)
+
+
 # Registry: AI_PROVIDER value (lowercase) -> provider factory.
 PROVIDERS: dict[str, Callable[[Any], AIProvider]] = {
     "xai": _xai,
     "grok": _xai,
     "groq": _groq,
     "openai": _openai,
+    "gemini": _gemini,
+    "google": _gemini,
+    "jina": _jina,
 }

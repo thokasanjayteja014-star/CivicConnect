@@ -115,6 +115,13 @@ export function PriorityPanel({ p }: { p: ComplaintDetail["priority"] }) {
           </tbody>
         </table>
       )}
+      {p.community && p.community.other_reporters > 0 && (
+        <p className="rounded-md border border-navy-200 bg-navy-50 px-3 py-2 text-sm text-navy-900">
+          <strong>{t("Reported by {n} other residents", { n: p.community.other_reporters })}</strong>{" · "}
+          {t("+{points} priority points", { points: p.community.boost })}
+          {p.community.base_score != null && <span className="text-xs text-navy-700"> ({t("base score {score}", { score: p.community.base_score })})</span>}
+        </p>
+      )}
       {p.review_reasons?.length > 0 && <ul className="list-disc pl-5 text-xs text-amber-800">{p.review_reasons.map((r) => <li key={r}>{r}</li>)}</ul>}
       <p className="text-xs text-slate-500">{p.disclaimer}</p>
     </div>

@@ -23,7 +23,8 @@ export default function PublicIssuePage() {
           <div className="border-b border-slate-200 pb-4">
             <div className="flex flex-wrap items-center gap-2">
               <Badge className={i.progress === "RESOLVED" ? "bg-green-50 text-green-800 ring-green-200" : "bg-slate-50 text-slate-700 ring-slate-300"}>{t(ISSUE_PROGRESS_LABEL[i.progress])}</Badge>
-              {i.verification && <Badge className="bg-navy-50 text-navy-800 ring-navy-200">{t(i.verification)}</Badge>}
+              {i.verification && <Badge className={i.verification === "Verified by the department" ? "bg-navy-50 text-navy-800 ring-navy-200" : "bg-amber-50 text-amber-900 ring-amber-200"}>{t(i.verification)}</Badge>}
+              {i.auto_generated && <Badge className="bg-amber-50 text-amber-900 ring-amber-200">{t("Reported by several residents")}</Badge>}
             </div>
             <h1 className="mt-2 text-2xl font-semibold text-slate-900">{i.title}</h1>
             <p className="mt-1 text-sm text-slate-600">{[i.general_location, i.area].filter(Boolean).join(" · ")}</p>
@@ -32,6 +33,7 @@ export default function PublicIssuePage() {
             <div className="space-y-5 lg:col-span-2">
               <Card title={t("About this issue")}>
                 <p className="whitespace-pre-wrap text-slate-800">{i.description}</p>
+                {i.published_automatically && <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{t("CivicConnect published this issue automatically because the department did not review it within 7 days of several residents reporting it.")}</p>}
                 {i.resolution_info && <div className="mt-3 rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-900"><strong>{t("Resolution")}:</strong> {i.resolution_info}</div>}
               </Card>
               <Card title={t("Progress updates")}>
@@ -39,7 +41,7 @@ export default function PublicIssuePage() {
                   <ol className="space-y-3">{i.updates.map((u: any, n: number) => (
                     <li key={n} className="border-l-2 border-navy-200 pl-3">
                       <p className="text-xs text-slate-500">{fmtDate(u.created_at)}{u.progress ? ` · ${t(ISSUE_PROGRESS_LABEL[u.progress])}` : ""}</p>
-                      <p className="text-sm">{u.message}</p>
+                      <p className="text-sm">{u.automatic ? t(u.message) : u.message}</p>
                     </li>
                   ))}</ol>
                 )}

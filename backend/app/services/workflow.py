@@ -119,8 +119,20 @@ def change_status(
     if target in (S.REJECTED, S.RESOLVED_AWAITING_VERIFICATION):
         from app.services.escalation import close_escalations_for
         close_escalations_for(db, complaint.id, actor.user_id, f"Complaint moved to {target.value}.")
+    if target == S.REJECTED:
+        # A rejected report no longer counts towards the priority of the complaints linked to it.
+        _refresh_linked_priority(db, complaint.id)
     db.commit()
     return complaint
+
+
+def _refresh_linked_priority(db: Session, *complaint_ids: uuid.UUID) -> None:
+    from app.services.complaints import refresh_community_priority
+    ids = set(complaint_ids)
+    for a, b in db.execute(select(ComplaintRelationship.source_complaint_id, ComplaintRelationship.related_complaint_id).where(
+            ComplaintRelationship.source_complaint_id.in_(ids) | ComplaintRelationship.related_complaint_id.in_(ids))).all():
+        ids.update((a, b))
+    refresh_community_priority(db, ids)
 
 
 def _close_active_assignment(db: Session, complaint: Complaint) -> None:
@@ -376,6 +388,7 @@ def decide_relationship(db: Session, actor: Actor, complaint_id: uuid.UUID, rela
     db.flush()
     audit.record(db, actor_id=actor.user_id, action="RELATIONSHIP_DECISION", entity_type="complaint", entity_id=complaint.id,
                  details={"related_complaint_id": related_id, "status": status})
+    _refresh_linked_priority(db, complaint.id, related_id)
     db.commit()
     return rel
 

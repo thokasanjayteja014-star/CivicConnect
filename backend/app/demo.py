@@ -294,6 +294,16 @@ def seed() -> None:
             made.append(complain(cit2, "Speed breaker damaged on Gokul Road",
                                  "The speed breaker near the bus depot has broken apart and loose stones are scattered on the road.",
                                  Category.ROAD_INFRASTRUCTURE, 15.455, 75.075, "Gokul Road bus depot", 1))
+            # Three streetlight reports close together: CivicConnect groups them into an automatic public issue.
+            made.append(complain(cit2, "Street lights off on Vidyagiri 3rd cross",
+                                 "Two street lights on the 3rd cross are off and the lane is completely dark at night.",
+                                 Category.STREETLIGHT, 15.4594, 74.9884, "Vidyagiri 3rd cross", 4))
+            made.append(complain(cit3, "Dark lane near Vidyagiri park",
+                                 "The lights along the lane next to the park have not worked for over a week.",
+                                 Category.STREETLIGHT, 15.4587, 74.9878, "Vidyagiri park", 2))
+            made.append(complain(citizen, "Streetlight pole lamp broken",
+                                 "The lamp on the pole at the corner of the 3rd cross is broken and hangs loose.",
+                                 Category.STREETLIGHT, 15.4590, 74.9890, "Corner of Vidyagiri 3rd cross", 1))
 
         c_resolved, c_progress, c_st1, c_st2, c_foot, c_water = (m[0] for m in made[:6])
         c_light = made[10][0]
@@ -349,6 +359,8 @@ def seed() -> None:
                                  progress=PublicIssueProgress.IN_PROGRESS, author_id=dadmin.id,
                                  created_at=now - timedelta(days=1)))
         db.commit()
+        from app.services.auto_issues import run_auto_public_issues
+        run_auto_public_issues(db)
         _ = (o1, o2, c_foot)
     finally:
         db.close()

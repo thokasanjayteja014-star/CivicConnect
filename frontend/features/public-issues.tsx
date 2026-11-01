@@ -1,6 +1,6 @@
 "use client";
 
-import { ExternalLink, Plus, X } from "lucide-react";
+import { Bot, ExternalLink, Plus, X } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -48,6 +48,8 @@ export function PublicIssuesManager() {
           <li key={s} className="flex items-center gap-2"><span className="grid h-5 w-5 place-items-center rounded bg-navy-700 text-2xs font-semibold text-white">{i + 1}</span>{t(s)}{i < 4 && <span className="text-slate-300">→</span>}</li>
         ))}
       </ol>
+      <p className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"><Bot className="mt-0.5 h-4 w-4 shrink-0" />
+        {t("When three or more residents report the same kind of problem within about 200 metres, CivicConnect creates a public issue automatically. If the department does not review it within 7 days, it is published anyway. Only the main administration can withdraw an automatic issue.")}</p>
       <Tabs value={status} onChange={setStatus} tabs={[{ id: "" as Filter, label: t("All") }, { id: "DRAFT" as Filter, label: t("Draft") }, { id: "VERIFIED" as Filter, label: t("Awaiting publication") },
         { id: "PUBLISHED" as Filter, label: t("Published") }, { id: "UNPUBLISHED" as Filter, label: t("Unpublished") }]} />
       <Loadable q={q} empty={(d) => d.length === 0} emptyTitle={t("No public issues here")} emptyBody={t("Create one from related complaints that affect many residents, such as several potholes on the same road.")}>
@@ -57,7 +59,7 @@ export function PublicIssuesManager() {
               <thead><tr>{["Issue", "Department", "Related complaints", "Progress", "Publication", "Last updated"].map((h) => <th key={h} className={thCls}>{t(h)}</th>)}</tr></thead>
               <tbody className="divide-y divide-slate-100">{rows.map((i) => (
                 <tr key={i.id} className="cursor-pointer hover:bg-slate-50" onClick={() => setOpenId(i.id)}>
-                  <td className={tdCls}><div className="font-medium text-navy-800 underline">{i.title}</div><div className="text-xs text-slate-500">{i.general_location || i.jurisdiction}</div></td>
+                  <td className={tdCls}><div className="font-medium text-navy-800 underline">{i.title}</div>{i.auto_generated && <AutoBadge issue={i} />}<div className="text-xs text-slate-500">{i.general_location || i.jurisdiction}</div></td>
                   <td className={tdCls}>{i.department}</td>
                   <td className={tdCls}>{i.related_complaints}</td>
                   <td className={tdCls}>{t(ISSUE_PROGRESS_LABEL[i.progress])}</td>
@@ -118,6 +120,33 @@ function CreateIssue({ preselected, onClose, onCreated }: { preselected: string[
   );
 }
 
+function AutoBadge({ issue }: { issue: any }) {
+  const t = useT();
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-1 text-2xs">
+      <Badge className="bg-amber-50 text-amber-900 ring-amber-200"><Bot className="h-3 w-3" /> {t("Created automatically")}</Badge>
+      {(issue.status === "DRAFT" || issue.status === "VERIFIED") && issue.auto_publish_at &&
+        <span className="text-slate-600">{t("Goes public on {date}", { date: fmtDate(issue.auto_publish_at, false) })}</span>}
+    </div>
+  );
+}
+
+function AutoNotice({ issue }: { issue: any }) {
+  const t = useT();
+  const pending = issue.status === "DRAFT" || issue.status === "VERIFIED";
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+      <Bot className="mt-0.5 h-4 w-4 shrink-0" />
+      <div>
+        <p className="font-medium">{t("Created automatically from {n} similar reports nearby.", { n: issue.related_complaints })}</p>
+        {pending && issue.auto_publish_at && <p>{t("It will be published on {date} even if no one reviews it. Verify it before then so residents see the department's assessment.", { date: fmtDate(issue.auto_publish_at) })}</p>}
+        {issue.published_automatically && <p>{t("Published automatically because the department did not complete its review within 7 days.")}</p>}
+        <p className="text-xs">{t("Only the main administration can unpublish it or remove reports from it.")}</p>
+      </div>
+    </div>
+  );
+}
+
 function IssueDetail({ id, onClose, onChanged }: { id: string; onClose: () => void; onChanged: () => void }) {
   const t = useT();
   const { user } = useAuth();
@@ -137,7 +166,7 @@ function IssueDetail({ id, onClose, onChanged }: { id: string; onClose: () => vo
       footer={d && <>
         {d.can_approve && d.status === "DRAFT" && <Button variant="secondary" onClick={() => setPanel("verify")}>{t("Verify and assess impact")}</Button>}
         {d.can_approve && (d.status === "VERIFIED" || d.status === "UNPUBLISHED") && <Button onClick={() => act(() => api(`/api/authority/public-issues/${id}/publish`, { method: "POST" }), "Published.")}>{t("Approve and publish")}</Button>}
-        {d.can_approve && d.status === "PUBLISHED" && <Button variant="secondary" onClick={() => setPanel("unpublish")}>{t("Unpublish")}</Button>}
+        {d.can_unpublish && d.status === "PUBLISHED" && <Button variant="secondary" onClick={() => setPanel("unpublish")}>{t("Unpublish")}</Button>}
         <Button variant="secondary" onClick={() => setPanel("link")}>{t("Link complaints")}</Button>
         <Button onClick={() => setPanel("update")}>{t("Post progress update")}</Button>
       </>}>
@@ -145,6 +174,7 @@ function IssueDetail({ id, onClose, onChanged }: { id: string; onClose: () => vo
         <>
           <Feedback s={s} />
           <div className="flex flex-wrap items-center gap-2"><IssueStatusBadge status={d.status} /><Badge>{t(ISSUE_PROGRESS_LABEL[d.progress])}</Badge>{d.impact_level && <Badge>{t("Impact")}: {t(d.impact_level)}</Badge>}</div>
+          {d.auto_generated && <AutoNotice issue={d} />}
           <p className="text-slate-800">{d.description}</p>
           <KeyValue items={[
             [t("General location"), d.general_location], [t("Department"), d.department], [t("Jurisdiction"), d.jurisdiction],
@@ -189,7 +219,7 @@ function IssueDetail({ id, onClose, onChanged }: { id: string; onClose: () => vo
               <li key={c.complaint_id} className="flex items-center gap-2 px-3 py-1.5">
                 <Link href={`/authority/complaints/${c.complaint_id}`} className="font-mono text-xs text-navy-700 underline">{c.reference_id}</Link>
                 <span className="min-w-0 flex-1 truncate">{c.title}</span><StatusBadge status={c.status} />
-                {d.complaints.length > 1 && <button type="button" aria-label={t("Unlink")} className="rounded p-1 text-slate-400 hover:text-red-700"
+                {d.complaints.length > 1 && (!d.auto_generated || user?.role === "SYSTEM_ADMIN") && <button type="button" aria-label={t("Unlink")} className="rounded p-1 text-slate-400 hover:text-red-700"
                   onClick={() => act(() => api(`/api/authority/public-issues/${id}/complaints/${c.complaint_id}`, { method: "DELETE" }), "Complaint unlinked.")}><X className="h-3.5 w-3.5" /></button>}
               </li>
             ))}</ul>
@@ -198,7 +228,7 @@ function IssueDetail({ id, onClose, onChanged }: { id: string; onClose: () => vo
             <h3 className="mb-1 text-sm font-semibold text-slate-900">{t("Update history")}</h3>
             {d.updates.length === 0 ? <p className="text-xs text-slate-500">{t("No updates yet.")}</p> : (
               <ul className="space-y-2">{d.updates.map((u: any) => (
-                <li key={u.id} className="border-l-2 border-navy-200 pl-3"><div className="text-xs text-slate-500">{fmtDate(u.created_at)} · {u.author}{u.progress ? ` · ${t(ISSUE_PROGRESS_LABEL[u.progress])}` : ""}</div><p>{u.message}</p></li>
+                <li key={u.id} className="border-l-2 border-navy-200 pl-3"><div className="text-xs text-slate-500">{fmtDate(u.created_at)} · {t(u.author)}{u.progress ? ` · ${t(ISSUE_PROGRESS_LABEL[u.progress])}` : ""}</div><p>{t(u.message)}</p></li>
               ))}</ul>
             )}
           </div>

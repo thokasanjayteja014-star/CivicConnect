@@ -241,3 +241,84 @@ def test_overview_and_public_issue_workflow(client, admin, db):
     assert client.get(f"/api/public/issues/{issue['id']}").json()["resolution_info"] == "Resurfaced 300 m stretch."
     _post(client, w["da"], f"/api/authority/public-issues/{issue['id']}/unpublish", {"reason": "Superseded by new issue"}, 200)
     assert client.get("/api/public/issues").json()["total"] == 0
+
+
+def test_auto_public_issue_from_cluster(client, admin, db):
+    """Three nearby reports become a public issue that the department cannot hide; it publishes after 7 days."""
+    from app.models import PublicIssue
+    from app.services.auto_issues import run_auto_public_issues
+
+    at = admin[0]
+    w = _two_districts(client, at, db)
+    made = []
+    for n in range(3):
+        token, _ = register_citizen(client, email=f"resident{n}@example.com", name=f"Resident Number{n}")
+        made.append(create_complaint(client, token, location={**IN_A1, "latitude": 14.5 + n * 0.0005}))
+    far_token, _ = register_citizen(client, email="far@example.com")
+    far = create_complaint(client, far_token, location=IN_A2)
+
+    issues = client.get("/api/authority/public-issues", headers=auth(w["da"])).json()
+    assert len(issues) == 1
+    issue = issues[0]
+    assert issue["auto_generated"] and issue["status"] == "DRAFT" and issue["related_complaints"] == 3
+    assert issue["auto_publish_at"] and not issue["can_unpublish"]
+    assert "Ward A1" in issue["title"]
+    # a fourth nearby report joins the same issue; a far one does not
+    token4, _ = register_citizen(client, email="resident4@example.com")
+    create_complaint(client, token4, location={**IN_A1, "latitude": 14.5003})
+    detail = client.get(f"/api/authority/public-issues/{issue['id']}", headers=auth(w["da"])).json()
+    assert detail["related_complaints"] == 4
+    assert far["reference_id"] not in str(detail["complaints"])
+    # the department cannot remove reports from it
+    r = client.delete(f"/api/authority/public-issues/{issue['id']}/complaints/{made[0]['complaint_id']}", headers=auth(w["da"]))
+    assert r.status_code == 403
+    assert client.get("/api/public/issues").json()["total"] == 0
+
+    # 7 days pass with no review: published automatically
+    run_auto_public_issues(db, now=datetime.now(timezone.utc) + timedelta(days=7, minutes=1))
+    pub = client.get(f"/api/public/issues/{issue['id']}").json()
+    assert pub["published_automatically"] and pub["verification"] == "Not yet reviewed by the department"
+    assert pub["updates"][0]["automatic"]
+    assert "Resident Number" not in str(pub) and made[0]["reference_id"] not in str(pub)
+    # department administrator cannot unpublish it; the main administration can
+    assert client.post(f"/api/authority/public-issues/{issue['id']}/unpublish", json={"reason": "Not a real problem"},
+                       headers=auth(w["da"])).status_code == 403
+    _post(client, at, f"/api/authority/public-issues/{issue['id']}/unpublish", {"reason": "Duplicate of another issue"}, 200)
+    # an unpublished automatic issue is not recreated from the same reports
+    run_auto_public_issues(db)
+    db.expire_all()
+    assert len(db.scalars(select(PublicIssue)).all()) == 1
+
+
+def test_more_residents_reporting_raises_priority(client, admin, db):
+    """Each independent resident reporting the same problem adds priority; repeats by one person and NOT_RELATED don't."""
+    FULL = {"observed_severity": "MODERATE", "safety_risk": "LOW", "public_exposure": "STREET",
+            "occurred_at": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()}
+    at = admin[0]
+    w = _two_districts(client, at, db)
+    t1, _ = register_citizen(client)
+    first = create_complaint(client, t1, location=IN_A1, **FULL)
+    # no sensitive-location data in this test setup: an officer confirms that factor so a score exists
+    _post(client, w["da"], f"/api/authority/complaints/{first['complaint_id']}/priority",
+          {"location_sensitivity": 20, "explanation": "Residential street, no school or hospital nearby."}, 200)
+    base = client.get(f"/api/authority/complaints/{first['complaint_id']}", headers=auth(w["da"])).json()["priority"]
+    assert base["community"]["other_reporters"] == 0
+    # the same citizen reporting again does not count
+    create_complaint(client, t1, location={**IN_A1, "latitude": 14.5001}, **FULL)
+    again = client.get(f"/api/authority/complaints/{first['complaint_id']}", headers=auth(w["da"])).json()["priority"]
+    assert again["community"]["other_reporters"] == 0 and again["priority_score"] == base["priority_score"]
+    # two other residents: +10 on the first complaint
+    others = []
+    for n in range(2):
+        tok, _ = register_citizen(client)
+        others.append(create_complaint(client, tok, location={**IN_A1, "latitude": 14.5002 + n * 0.0001}, **FULL))
+    p = client.get(f"/api/authority/complaints/{first['complaint_id']}", headers=auth(w["da"])).json()["priority"]
+    assert p["community"]["other_reporters"] == 2 and p["community"]["boost"] == 10
+    assert p["priority_score"] == round(base["priority_score"] + 10, 2)
+    # officer marks one as not related: the boost drops back
+    r = client.post(f"/api/complaints/{first['complaint_id']}/relationships",
+                    json={"related_complaint_id": others[0]["complaint_id"], "relationship_status": "NOT_RELATED"},
+                    headers=auth(w["da"]))
+    assert r.status_code == 200, r.text
+    p = client.get(f"/api/authority/complaints/{first['complaint_id']}", headers=auth(w["da"])).json()["priority"]
+    assert p["community"]["other_reporters"] == 1 and p["priority_score"] == round(base["priority_score"] + 5, 2)

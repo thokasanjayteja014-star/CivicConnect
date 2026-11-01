@@ -264,3 +264,37 @@ def test_transcribe_endpoint(client, monkeypatch):
     finally:
         monkeypatch.undo()
         gs.cache_clear()
+
+
+def test_duplicates_matched_by_meaning_with_separate_embedding_provider(client, db, monkeypatch):
+    """Groq for chat, Gemini for embeddings: a Telugu and an English report of the same problem match by meaning."""
+    from sqlalchemy import select as _select
+    from app.ai import ai_service
+    from app.models import ComplaintRelationship
+    gs = _settings(monkeypatch, AI_PROVIDER="groq", AI_PROVIDER_API_KEY="gsk", AI_MODEL_NAME="qwen",
+                   EMBEDDING_PROVIDER="gemini", EMBEDDING_API_KEY="gem-key", EMBEDDING_MODEL_NAME="gemini-embedding-001")
+    calls = []
+
+    def fake_post(url, headers, timeout, json=None, **kw):
+        calls.append((url, headers["Authorization"], json["model"]))
+        # same meaning -> same vector, whatever the language
+        vec = [1.0, 0.0, 0.0] if ("light" in json["input"] or "దీపం" in json["input"]) else [0.0, 1.0, 0.0]
+        return httpx.Response(200, json={"data": [{"embedding": vec}]})
+    monkeypatch.setattr(httpx, "post", fake_post)
+    try:
+        assert next(c for c in ai_service.ai_status().capabilities if c.name == "text_embedding").status == "AVAILABLE"
+        t1, _ = register_citizen(client)
+        t2, _ = register_citizen(client)
+        create_complaint(client, t1, title="Street light not working", category="STREETLIGHT",
+                         description="The street light outside the temple has not worked for a week.")
+        second = create_complaint(client, t2, title="వీధి దీపం పని చేయడం లేదు", category="STREETLIGHT",
+                                  description="గుడి దగ్గర వీధి దీపం వారం రోజులుగా వెలగడం లేదు.")
+        rel = db.scalar(_select(ComplaintRelationship).where(
+            ComplaintRelationship.source_complaint_id == uuid.UUID(second["complaint_id"])))
+        assert rel is not None and rel.text_similarity_method == "embedding-cosine:gemini-embedding-001"
+        assert rel.text_similarity >= 0.99 and any("Similar description" in r for r in rel.match_reasons)
+        assert calls and all(u.startswith("https://generativelanguage.googleapis.com/v1beta/openai/embeddings")
+                             and a == "Bearer gem-key" for u, a, _ in calls)
+    finally:
+        monkeypatch.undo()
+        gs.cache_clear()

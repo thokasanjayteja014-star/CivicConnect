@@ -10,8 +10,8 @@ import { useApi } from "@/hooks/useApi";
 
 // Validated categorical pair (light surface): submitted / resolved.
 const SERIES = [
-  { key: "submitted", label: "Submitted", color: "#2f5fae" },
-  { key: "resolved", label: "Verified resolved", color: "#c2410c" },
+  { key: "submitted", label: "Complaints raised", color: "#2f5fae" },
+  { key: "resolved", label: "Resolved and verified", color: "#15803d" },
 ] as const;
 
 function hours(h: number | null) {
@@ -38,11 +38,11 @@ function TrendChart({ data }: { data: { week_start: string; submitted: number; r
         <button type="button" className="ml-auto font-medium text-navy-700 underline" onClick={() => setTable(!table)}>{table ? t("Show chart") : t("Show as table")}</button>
       </div>
       {table ? (
-        <TableWrap><table className={tableCls}><thead><tr><th className={thCls}>{t("Week starting")}</th><th className={thCls}>{t("Submitted")}</th><th className={thCls}>{t("Verified resolved")}</th></tr></thead>
+        <TableWrap><table className={tableCls}><thead><tr><th className={thCls}>{t("Week starting")}</th><th className={thCls}>{t("Complaints raised")}</th><th className={thCls}>{t("Resolved and verified")}</th></tr></thead>
           <tbody className="divide-y divide-slate-100">{data.map((d) => <tr key={d.week_start}><td className={tdCls}>{label(d.week_start)}</td><td className={tdCls}>{d.submitted}</td><td className={tdCls}>{d.resolved}</td></tr>)}</tbody></table></TableWrap>
       ) : (
         <div className="relative">
-          <svg viewBox={`0 0 ${W} ${H}`} className="h-52 w-full" role="img" aria-label={t("Complaints submitted and resolved per week, last 12 weeks")}>
+          <svg viewBox={`0 0 ${W} ${H}`} className="h-52 w-full" role="img" aria-label={t("Complaints raised and resolved per week, last 12 weeks")}>
             {ticks.map((v) => (
               <g key={v}>
                 <line x1={padL} x2={W} y1={y(v)} y2={y(v)} stroke="#e2e8f0" strokeWidth={1} />

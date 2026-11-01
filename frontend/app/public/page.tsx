@@ -138,7 +138,10 @@ function PublicIssuesList() {
                   <Link href={`/public/issues/${i.id}`} className="font-semibold text-navy-800 underline">{i.title}</Link>
                   <p className="text-xs text-slate-500">{[i.general_location, i.area, i.department].filter(Boolean).join(" · ")}</p>
                 </div>
-                <Badge className={i.progress === "RESOLVED" ? "bg-green-50 text-green-800 ring-green-200" : "bg-slate-50 text-slate-700 ring-slate-300"}>{t(ISSUE_PROGRESS_LABEL[i.progress])}</Badge>
+                <div className="flex flex-wrap gap-1">
+                  {i.auto_generated && <Badge className="bg-amber-50 text-amber-900 ring-amber-200">{t("Reported by several residents")}</Badge>}
+                  <Badge className={i.progress === "RESOLVED" ? "bg-green-50 text-green-800 ring-green-200" : "bg-slate-50 text-slate-700 ring-slate-300"}>{t(ISSUE_PROGRESS_LABEL[i.progress])}</Badge>
+                </div>
               </div>
               <p className="mt-2 line-clamp-2 text-sm text-slate-700">{i.description}</p>
               <p className="mt-2 text-xs text-slate-500">{t(CATEGORY_LABEL[i.category] || "")} · {t("{n} related complaints", { n: i.related_complaints })} · {t("updated {date}", { date: fmtDate(i.last_update, false) })}</p>

@@ -99,6 +99,16 @@ class PriorityResult:
     rubric_version: str = DEFAULT_PRIORITY_CONFIG["rubric_version"]
 
 
+# Several residents reporting the same problem means it affects more people: each additional
+# independent reporter adds points on top of the weighted score, up to a cap.
+COMMUNITY_POINTS_PER_REPORTER = 5.0
+COMMUNITY_MAX_BOOST = 20.0
+
+
+def community_boost(other_reporters: int) -> float:
+    return min(COMMUNITY_MAX_BOOST, COMMUNITY_POINTS_PER_REPORTER * max(0, other_reporters))
+
+
 def level_for_score(score: float, thresholds: dict[str, float] | None = None) -> PriorityLevel:
     t = thresholds or DEFAULT_PRIORITY_CONFIG["thresholds"]
     if score >= t["CRITICAL"]:

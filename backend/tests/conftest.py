@@ -18,7 +18,8 @@ os.environ["AUTH_SECRET"] = "test-secret-" + "x" * 40
 os.environ["MEDIA_LOCAL_DIR"] = tempfile.mkdtemp(prefix="cc-media-")
 os.environ["MEDIA_STORAGE_ENDPOINT"] = ""
 os.environ["RATE_LIMIT_ENABLED"] = "false"
-for k in ("AI_PROVIDER", "AI_PROVIDER_API_KEY", "AI_MODEL_NAME", "EMBEDDING_MODEL_NAME", "SPEECH_MODEL_NAME", "VISION_MODEL_NAME"):
+for k in ("AI_PROVIDER", "AI_PROVIDER_API_KEY", "AI_MODEL_NAME", "EMBEDDING_MODEL_NAME", "SPEECH_MODEL_NAME", "VISION_MODEL_NAME",
+          "SPEECH_PROVIDER", "SPEECH_API_KEY", "EMBEDDING_PROVIDER", "EMBEDDING_API_KEY"):
     os.environ[k] = ""
 
 from alembic import command  # noqa: E402

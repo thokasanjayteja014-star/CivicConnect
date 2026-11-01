@@ -44,6 +44,7 @@ from app.models.enums import (
 from app.security.deps import require_staff, require_system_admin
 from app.security.permissions import Actor, in_department_scope
 from app.services import escalation as esc_service
+from app.services.auto_issues import run_auto_public_issues
 from app.services.hierarchy import jurisdiction_path
 
 admin_router = APIRouter(prefix="/api/admin", tags=["governance"], dependencies=[Depends(require_system_admin)])
@@ -75,6 +76,7 @@ def _resolution_hours(db: Session, where=None) -> tuple[float | None, int]:
 @admin_router.get("/overview")
 def overview(db: Session = Depends(get_db)):
     esc_service.run_overdue_escalations(db)
+    run_auto_public_issues(db)
     now = _now()
     total = db.scalar(select(func.count()).select_from(Complaint)) or 0
     by_status = {k.value: v for k, v in db.execute(select(Complaint.status, func.count()).group_by(Complaint.status)).all()}
@@ -259,6 +261,19 @@ def _updates(db: Session, issue_id: uuid.UUID) -> list[PublicIssueUpdate]:
                            .order_by(PublicIssueUpdate.created_at.desc())))
 
 
+AUTOMATIC_AUTHOR = "CivicConnect (automatic)"
+
+
+def _author(db: Session, user_id) -> str:
+    u = db.get(User, user_id) if user_id else None
+    return u.full_name if u else AUTOMATIC_AUTHOR
+
+
+def _can_unpublish(actor: Actor, issue: PublicIssue) -> bool:
+    # Automatic issues exist so that a department cannot hide them; only the main administration may withdraw one.
+    return actor.is_system_admin if issue.auto_generated else _can_approve(actor)
+
+
 def staff_issue_dict(db: Session, actor: Actor, i: PublicIssue, detail: bool = False) -> dict:
     linked = _linked(db, i.id)
     out = {"id": i.id, "title": i.title, "description": i.description, "general_location": i.general_location,
@@ -269,12 +284,14 @@ def staff_issue_dict(db: Session, actor: Actor, i: PublicIssue, detail: bool = F
            "latitude": i.latitude, "longitude": i.longitude,
            "verified_at": i.verified_at, "published_at": i.published_at, "resolved_at": i.resolved_at,
            "created_at": i.created_at, "updated_at": i.updated_at,
-           "can_approve": _can_approve(actor)}
+           "auto_generated": i.auto_generated, "auto_publish_at": i.auto_publish_at,
+           "published_automatically": i.published_automatically,
+           "can_approve": _can_approve(actor), "can_unpublish": _can_unpublish(actor, i)}
     if detail:
         out["complaints"] = [{"complaint_id": c.id, "reference_id": c.reference_id, "title": c.title, "status": c.status,
                               "created_at": c.created_at} for c in linked]
         out["updates"] = [{"id": u.id, "message": u.message, "progress": u.progress, "created_at": u.created_at,
-                           "author": db.get(User, u.author_id).full_name} for u in _updates(db, i.id)]
+                           "author": _author(db, u.author_id)} for u in _updates(db, i.id)]
     return out
 
 
@@ -302,6 +319,7 @@ def _log(db: Session, actor: Actor, action: str, issue: PublicIssue, details: di
 def list_issues(actor: Actor = Depends(require_staff), db: Session = Depends(get_db),
                 status: PublicIssueStatus | None = None, progress: PublicIssueProgress | None = None,
                 category: Category | None = None, q: str | None = Query(default=None, max_length=100)):
+    run_auto_public_issues(db)
     stmt = select(PublicIssue).where(_issue_scope(actor))
     if status:
         stmt = stmt.where(PublicIssue.status == status)
@@ -334,6 +352,7 @@ def create_issue(body: IssueIn, actor: Actor = Depends(require_staff), db: Sessi
 
 @staff_router.get("/{issue_id}")
 def get_issue(issue_id: uuid.UUID, actor: Actor = Depends(require_staff), db: Session = Depends(get_db)):
+    run_auto_public_issues(db)
     return staff_issue_dict(db, actor, _get_issue(db, actor, issue_id), True)
 
 
@@ -377,9 +396,9 @@ def publish_issue(issue_id: uuid.UUID, actor: Actor = Depends(require_staff), db
 
 @staff_router.post("/{issue_id}/unpublish")
 def unpublish_issue(issue_id: uuid.UUID, body: ReasonIn, actor: Actor = Depends(require_staff), db: Session = Depends(get_db)):
-    if not _can_approve(actor):
-        raise err("FORBIDDEN")
     issue = _get_issue(db, actor, issue_id, lock=True)
+    if not _can_unpublish(actor, issue):
+        raise err("FORBIDDEN", message="Only the main administration can unpublish an automatically created issue.")
     if issue.status != PublicIssueStatus.PUBLISHED:
         raise err("INVALID_STATUS_TRANSITION", message="Only a published issue can be unpublished.")
     issue.status = PublicIssueStatus.UNPUBLISHED
@@ -422,6 +441,8 @@ def link_complaints(issue_id: uuid.UUID, body: LinkIn, actor: Actor = Depends(re
 @staff_router.delete("/{issue_id}/complaints/{complaint_id}")
 def unlink_complaint(issue_id: uuid.UUID, complaint_id: uuid.UUID, actor: Actor = Depends(require_staff), db: Session = Depends(get_db)):
     issue = _get_issue(db, actor, issue_id, lock=True)
+    if issue.auto_generated and not actor.is_system_admin:
+        raise err("FORBIDDEN", message="Only the main administration can remove reports from an automatically created issue.")
     link = db.scalar(select(PublicIssueComplaint).where(PublicIssueComplaint.issue_id == issue.id,
                                                         PublicIssueComplaint.complaint_id == complaint_id))
     if link is None:
@@ -443,18 +464,22 @@ def public_issue_dict(db: Session, i: PublicIssue, detail: bool = False) -> dict
     out = {"id": i.id, "title": i.title, "description": i.description, "general_location": i.general_location,
            "category": i.category, "department": i.department.name if i.department else None,
            "area": i.jurisdiction.name if i.jurisdiction else None,
-           "verification": "Verified by the department" if i.verified_at else None, "impact_level": i.impact_level,
+           "verification": ("Verified by the department" if i.verified_at
+                            else "Not yet reviewed by the department" if i.auto_generated else None), "impact_level": i.impact_level,
+           "auto_generated": i.auto_generated, "published_automatically": i.published_automatically,
            "related_complaints": n, "progress": i.progress, "resolution_info": i.resolution_info,
            "latitude": i.latitude, "longitude": i.longitude, "published_at": i.published_at, "resolved_at": i.resolved_at,
            "last_update": ups[0].created_at if ups else i.published_at}
     if detail:
-        out["updates"] = [{"message": u.message, "progress": u.progress, "created_at": u.created_at} for u in ups]
+        out["updates"] = [{"message": u.message, "progress": u.progress, "created_at": u.created_at,
+                           "automatic": u.author_id is None} for u in ups]
     return out
 
 
 @public_router.get("")
 def public_issues(db: Session = Depends(get_db), category: Category | None = None, progress: PublicIssueProgress | None = None,
                   q: str | None = Query(default=None, max_length=100), limit: int = Query(default=50, le=200), offset: int = 0):
+    run_auto_public_issues(db)
     stmt = select(PublicIssue).where(PublicIssue.status == PublicIssueStatus.PUBLISHED)
     if category:
         stmt = stmt.where(PublicIssue.category == category)
@@ -469,6 +494,7 @@ def public_issues(db: Session = Depends(get_db), category: Category | None = Non
 
 @public_router.get("/{issue_id}")
 def public_issue(issue_id: uuid.UUID, db: Session = Depends(get_db)):
+    run_auto_public_issues(db)
     i = db.scalar(select(PublicIssue).where(PublicIssue.id == issue_id, PublicIssue.status == PublicIssueStatus.PUBLISHED))
     if i is None:
         raise err("NOT_FOUND")

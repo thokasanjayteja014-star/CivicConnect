@@ -108,6 +108,17 @@ def _speech_provider() -> tuple[AIProvider | None, str | None]:
     return _provider()
 
 
+def _embedding_provider() -> tuple[AIProvider | None, str | None]:
+    """Embeddings can use their own provider (e.g. gemini while AI_PROVIDER=groq, which has no embeddings)."""
+    s = get_settings()
+    if s.EMBEDDING_PROVIDER and s.EMBEDDING_API_KEY:
+        factory = PROVIDERS.get(s.EMBEDDING_PROVIDER.lower())
+        if factory is None:
+            return None, "AI_NOT_IMPLEMENTED"
+        return factory(s.model_copy(update={"AI_PROVIDER_API_KEY": s.EMBEDDING_API_KEY, "AI_BASE_URL": ""})), None
+    return _provider()
+
+
 def _normalise_image(m: MediaInput) -> MediaInput | None:
     """Convert to JPEG/PNG the model accepts and cap the size to keep requests small."""
     try:
@@ -233,6 +244,7 @@ def ai_status() -> AIStatus:
     s = get_settings()
     provider, reason = _provider()
     speech, _ = _speech_provider()
+    embedder, _ = _embedding_provider()
     def cap(name: str, model: str | None, implemented: bool, note: str | None = None) -> CapabilityStatus:
         if provider is None:
             return CapabilityStatus(name=name, configured=False, status=reason or "AI_NOT_CONFIGURED", note=note)
@@ -249,7 +261,12 @@ def ai_status() -> AIStatus:
         else CapabilityStatus(name="audio_transcription", configured=False,
                               status="AI_NOT_IMPLEMENTED" if speech and s.SPEECH_MODEL_NAME else "AI_NOT_CONFIGURED",
                               note="Needs SPEECH_MODEL_NAME and a provider with speech-to-text (groq or openai)."),
-        cap("text_embedding", s.EMBEDDING_MODEL_NAME or None, bool(provider and provider.supports_embeddings)),
+        CapabilityStatus(name="text_embedding", configured=True, status="AVAILABLE", model=s.EMBEDDING_MODEL_NAME,
+                         note=f"via {s.EMBEDDING_PROVIDER or s.AI_PROVIDER}; duplicates are matched by meaning")
+        if embedder and embedder.supports_embeddings and s.EMBEDDING_MODEL_NAME
+        else CapabilityStatus(name="text_embedding", configured=False,
+                              status="AI_NOT_IMPLEMENTED" if embedder and s.EMBEDDING_MODEL_NAME else "AI_NOT_CONFIGURED",
+                              note="Needs EMBEDDING_MODEL_NAME and an embedding provider (gemini, jina or openai)."),
         CapabilityStatus(name="image_embedding", configured=False, status="AI_NOT_IMPLEMENTED",
                          note="Not needed: duplicate photos are matched with deterministic perceptual hashing."),
         cap("video_understanding", s.VISION_MODEL_NAME or s.AI_MODEL_NAME or None,
@@ -332,7 +349,7 @@ def transcribe_audio(media: MediaInput) -> TranscriptionResult:
 
 
 def generate_text_embedding(text: str) -> EmbeddingResult:
-    provider, reason = _provider()
+    provider, reason = _embedding_provider()
     model = get_settings().EMBEDDING_MODEL_NAME
     if provider is None or not provider.supports_embeddings or not model:
         return EmbeddingResult(available=False, reason=reason or "AI_NOT_CONFIGURED")
