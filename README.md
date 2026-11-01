@@ -6,7 +6,7 @@
 
 **An AI-assisted civic grievance management platform that connects citizens with the right government department, tracks every complaint to a verified fix, and makes recurring problems visible to the public.**
 
-[**Live Website**](https://YOUR-VERCEL-URL.vercel.app) · [**Demo Video**](https://YOUR-DEMO-VIDEO-LINK) · [**API Docs**](https://civicconnect-api-26zp.onrender.com/docs)
+[**Live Website**](https://civic-connect-pearl-omega.vercel.app/) · [**Demo Video**](https://YOUR-DEMO-VIDEO-LINK) · [**API Docs**](https://civicconnect-api-26zp.onrender.com/docs)
 
 ![Status](https://img.shields.io/badge/status-working%20prototype-blue) ![Backend](https://img.shields.io/badge/backend-FastAPI-009688) ![Frontend](https://img.shields.io/badge/frontend-Next.js%2014-black) ![Database](https://img.shields.io/badge/database-PostgreSQL%20%2B%20PostGIS-336791) ![AI](https://img.shields.io/badge/AI-Groq%20Qwen%20%2B%20Whisper-orange) ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 
