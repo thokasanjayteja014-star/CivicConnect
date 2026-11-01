@@ -2,7 +2,30 @@
 // the only credential is the user's own short-lived session token.
 
 export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
-const TOKEN_KEY = "cc_session";
+const ENV_KEY = "cc_env";
+
+/** "demo" selects the isolated demonstration environment (separate database schema). */
+export type AppEnv = "production" | "demo";
+
+export function getEnv(): AppEnv {
+  if (typeof window === "undefined") return "production";
+  try { return window.localStorage.getItem(ENV_KEY) === "demo" ? "demo" : "production"; } catch { return "production"; }
+}
+
+export function setEnv(env: AppEnv) {
+  try {
+    if (env === "demo") window.localStorage.setItem(ENV_KEY, "demo");
+    else window.localStorage.removeItem(ENV_KEY);
+  } catch { /* storage unavailable */ }
+  window.dispatchEvent(new Event("cc:env"));
+}
+
+// Each environment keeps its own session, so a demo login can never act on production.
+const tokenKey = () => (getEnv() === "demo" ? "cc_session_demo" : "cc_session");
+
+function envHeaders(): Record<string, string> {
+  return getEnv() === "demo" ? { "X-CC-Env": "demo" } : {};
+}
 
 export class ApiError extends Error {
   status: number;
@@ -23,11 +46,11 @@ type Session = { token: string; expiresAt: string };
 export function getSession(): Session | null {
   if (typeof window === "undefined") return null;
   try {
-    const raw = window.localStorage.getItem(TOKEN_KEY);
+    const raw = window.localStorage.getItem(tokenKey());
     if (!raw) return null;
     const s = JSON.parse(raw) as Session;
     if (new Date(s.expiresAt).getTime() <= Date.now()) {
-      window.localStorage.removeItem(TOKEN_KEY);
+      window.localStorage.removeItem(tokenKey());
       return null;
     }
     return s;
@@ -37,17 +60,17 @@ export function getSession(): Session | null {
 }
 
 export function setSession(token: string, expiresAt: string) {
-  window.localStorage.setItem(TOKEN_KEY, JSON.stringify({ token, expiresAt }));
+  window.localStorage.setItem(tokenKey(), JSON.stringify({ token, expiresAt }));
 }
 
 export function clearSession() {
-  if (typeof window !== "undefined") window.localStorage.removeItem(TOKEN_KEY);
+  if (typeof window !== "undefined") window.localStorage.removeItem(tokenKey());
 }
 
 type Opts = { method?: string; body?: unknown; form?: FormData; headers?: Record<string, string>; signal?: AbortSignal };
 
 export async function api<T = any>(path: string, opts: Opts = {}): Promise<T> {
-  const headers: Record<string, string> = { ...(opts.headers || {}) };
+  const headers: Record<string, string> = { ...envHeaders(), ...(opts.headers || {}) };
   const s = getSession();
   if (s) headers["Authorization"] = `Bearer ${s.token}`;
   let body: BodyInit | undefined;
@@ -88,6 +111,7 @@ export function uploadWithProgress<T = any>(path: string, file: File, onProgress
     xhr.open("POST", `${API_BASE}${path}`);
     const s = getSession();
     if (s) xhr.setRequestHeader("Authorization", `Bearer ${s.token}`);
+    Object.entries(envHeaders()).forEach(([k, v]) => xhr.setRequestHeader(k, v));
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(Math.round((e.loaded / e.total) * 100));
     xhr.onload = () => {
       let data: any = null;

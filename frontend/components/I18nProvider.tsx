@@ -10,7 +10,7 @@ type I18nCtx = { lang: Lang; setLang: (l: Lang) => void; t: (s: string, vars?: R
 const Ctx = createContext<I18nCtx | null>(null);
 
 /** BCP-47 locale for speech recognition and date formatting. */
-export const SPEECH_LOCALE: Record<Lang, string> = { en: "en-IN", hi: "hi-IN", kn: "kn-IN" };
+export const SPEECH_LOCALE: Record<Lang, string> = { en: "en-IN", hi: "hi-IN", kn: "kn-IN", te: "te-IN" };
 
 function interpolate(s: string, vars?: Record<string, string | number>) {
   return vars ? s.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? `{${k}}`)) : s;

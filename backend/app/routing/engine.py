@@ -1,8 +1,16 @@
-"""Deterministic geospatial department routing (spec L8, E19-E21).
+"""Deterministic jurisdiction- and responsibility-aware routing (no AI involved).
 
-`determine_department` is a pure function over facts gathered from PostGIS
-and the configured responsibility rules. It never guesses: a department is
-returned only when exactly one valid candidate exists. No AI is involved.
+`determine_routing` is a pure function over facts gathered from PostGIS and the
+administrative configuration:
+
+1. resolve the deepest jurisdiction containing the location (ward/village),
+2. find departments with an active responsibility for the category,
+3. find each department's nearest active unit along the jurisdiction's ancestor chain,
+4. route only when exactly one unit qualifies, otherwise send to administrative review,
+5. pick an eligible officer of that unit by operational area, then workload.
+
+A complaint is never discarded: anything that cannot be routed is PENDING_REVIEW, and a
+routed complaint without an eligible officer waits in the unit's unassigned queue.
 """
 from __future__ import annotations
 
@@ -12,11 +20,11 @@ from dataclasses import dataclass, field
 from app.models.enums import RoutingStatus
 
 MESSAGES = {
-    "ROUTED": "Routed to the configured responsible department.",
-    "PENDING_REVIEW": "We could not identify a responsible department automatically. The complaint requires administrative review.",
-    "UNROUTED": "No eligible department is configured for this complaint category and location. The complaint remains unassigned.",
+    "ROUTED": "Routed to the responsible department.",
+    "PENDING_REVIEW": "We could not identify a responsible department automatically. The complaint is in administrative review.",
+    "UNROUTED": "No eligible department is configured for this complaint category and location. The complaint is in administrative review.",
     "MULTIPLE_DEPARTMENTS": "Multiple departments may be responsible for this issue. Administrative review is required.",
-    "OUTSIDE_JURISDICTION": "The selected location could not be matched to a verified jurisdiction.",
+    "OUTSIDE_JURISDICTION": "The selected location could not be matched to a configured jurisdiction. Administrative review is required.",
 }
 
 
@@ -28,18 +36,31 @@ class DepartmentFact:
 
 
 @dataclass(frozen=True)
-class RuleFact:
+class UnitFact:
+    id: uuid.UUID
     department_id: uuid.UUID
+    jurisdiction_id: uuid.UUID
+    jurisdiction_name: str
     active: bool
-    verified: bool
+
+
+@dataclass(frozen=True)
+class OfficerFact:
+    id: uuid.UUID
+    name: str
+    active_assignments: int
+    # Depth of the most specific operational area covering the location; -1 = no areas configured
+    # (covers the whole unit); None = has areas but none cover the location (not eligible).
+    match_depth: int | None
 
 
 @dataclass
-class JurisdictionFact:
+class LeafFact:
     id: uuid.UUID
     name: str
-    is_prototype: bool
-    departments: list[DepartmentFact] = field(default_factory=list)
+    path: str
+    # Nearest unit per responsible department along this leaf's ancestor chain (None if not operating here).
+    units: dict[uuid.UUID, UnitFact | None] = field(default_factory=dict)
 
 
 @dataclass
@@ -48,8 +69,9 @@ class RoutingInput:
     any_jurisdiction_configured: bool
     location_uncertain: bool
     accuracy_meters: float | None
-    containing: list[JurisdictionFact]
-    rules: list[RuleFact]  # rules for this category (any state)
+    leaves: list[LeafFact]
+    responsible: list[DepartmentFact]  # departments with an active responsibility for the category
+    officers: dict[uuid.UUID, list[OfficerFact]] = field(default_factory=dict)  # per unit id
 
 
 @dataclass
@@ -58,7 +80,10 @@ class RoutingResult:
     reason_code: str
     explanation: str
     department_id: uuid.UUID | None = None
+    unit_id: uuid.UUID | None = None
     jurisdiction_id: uuid.UUID | None = None
+    officer_id: uuid.UUID | None = None
+    officer_reason: str | None = None
     candidates: dict = field(default_factory=dict)
 
     @property
@@ -66,98 +91,79 @@ class RoutingResult:
         return MESSAGES.get(self.reason_code, MESSAGES[self.routing_status.value])
 
 
-def determine_department(inp: RoutingInput) -> RoutingResult:
+def choose_officer(officers: list[OfficerFact]) -> tuple[OfficerFact | None, str]:
+    eligible = [o for o in officers if o.match_depth is not None]
+    if not eligible:
+        return None, ("No active officer of this unit covers the location; the complaint is waiting in the "
+                      "department's unassigned queue." if officers else
+                      "This unit has no active officers; the complaint is waiting in the department's unassigned queue.")
+    eligible.sort(key=lambda o: (-o.match_depth, o.active_assignments, o.name, str(o.id)))
+    best = eligible[0]
+    basis = "operational area covering the location" if best.match_depth >= 0 else "unit-wide officer (no operational areas set)"
+    return best, f"Assigned to {best.name}: {basis}, {best.active_assignments} active assignment(s)."
+
+
+def determine_routing(inp: RoutingInput) -> RoutingResult:
+    pending = RoutingStatus.PENDING_REVIEW
     if inp.location_uncertain:
-        return RoutingResult(
-            RoutingStatus.PENDING_REVIEW,
-            "LOCATION_UNCERTAIN",
-            f"Reported location accuracy ({inp.accuracy_meters} m) exceeds the configured limit; "
-            "an administrator should confirm the location before routing.",
-        )
-
+        return RoutingResult(pending, "LOCATION_UNCERTAIN",
+                             f"Reported location accuracy ({inp.accuracy_meters} m) exceeds the configured limit; "
+                             "an administrator should confirm the location before routing.")
     if not inp.any_jurisdiction_configured:
-        return RoutingResult(
-            RoutingStatus.UNROUTED,
-            "NO_JURISDICTION_CONFIGURED",
-            "No jurisdiction boundaries are configured, so no department can be determined.",
-        )
+        return RoutingResult(pending, "NO_JURISDICTION_CONFIGURED",
+                             "No jurisdiction boundaries are configured yet, so no department can be determined.")
+    if not inp.leaves:
+        return RoutingResult(pending, "OUTSIDE_JURISDICTION",
+                             "The location does not fall inside any configured jurisdiction boundary.")
 
-    if not inp.containing:
-        return RoutingResult(
-            RoutingStatus.PENDING_REVIEW,
-            "OUTSIDE_JURISDICTION",
-            "The location does not fall inside any configured jurisdiction; location clarification or "
-            "administrative review is required.",
-        )
-
-    rules_by_dept = {r.department_id: r for r in inp.rules}
-    jurisdictions_by_dept: dict[uuid.UUID, list[JurisdictionFact]] = {}
-    depts: dict[uuid.UUID, DepartmentFact] = {}
-    for j in inp.containing:
-        for d in j.departments:
-            depts[d.id] = d
-            jurisdictions_by_dept.setdefault(d.id, []).append(j)
-
-    eligible = [
-        d for d in depts.values()
-        if d.active and (r := rules_by_dept.get(d.id)) is not None and r.active and r.verified
-    ]
-    eligible.sort(key=lambda d: d.name)
-    jnames = ", ".join(sorted(f"{j.name}{' (prototype configuration)' if j.is_prototype else ''}" for j in inp.containing))
-    candidates = {
-        "jurisdictions": [{"id": str(j.id), "name": j.name, "is_prototype": j.is_prototype} for j in inp.containing],
-        "eligible_departments": [{"id": str(d.id), "name": d.name} for d in eligible],
+    places = "; ".join(leaf.path for leaf in inp.leaves)
+    candidates: dict = {
+        "jurisdictions": [{"id": str(leaf.id), "name": leaf.name, "path": leaf.path} for leaf in inp.leaves],
+        "responsible_departments": [{"id": str(d.id), "name": d.name, "active": d.active} for d in inp.responsible],
     }
+    if not inp.responsible:
+        return RoutingResult(pending, "NO_RESPONSIBILITY",
+                             f"Location is within {places}, but no department has an active responsibility for "
+                             f"{inp.category}. Configure a responsibility to route these complaints.",
+                             jurisdiction_id=inp.leaves[0].id, candidates=candidates)
 
-    if len(eligible) == 1:
-        dept = eligible[0]
-        juris = sorted(jurisdictions_by_dept[dept.id], key=lambda j: j.name)[0]
-        return RoutingResult(
-            RoutingStatus.ROUTED,
-            "ROUTED",
-            f"Location is within {jnames}. '{dept.name}' is the only active department with a verified "
-            f"responsibility rule for {inp.category} in this jurisdiction.",
-            department_id=dept.id,
-            jurisdiction_id=juris.id,
-            candidates=candidates,
-        )
-
-    if len(eligible) > 1:
-        names = ", ".join(d.name for d in eligible)
-        return RoutingResult(
-            RoutingStatus.PENDING_REVIEW,
-            "MULTIPLE_DEPARTMENTS",
-            f"Location is within {jnames}. Multiple departments have verified responsibility for "
-            f"{inp.category}: {names}. No department was selected automatically.",
-            candidates=candidates,
-        )
-
-    # No eligible department: is there something an administrator can fix?
-    actionable = []
-    for d in depts.values():
-        r = rules_by_dept.get(d.id)
-        if r is None:
+    inactive = [d.name for d in inp.responsible if not d.active]
+    units: dict[uuid.UUID, tuple[UnitFact, DepartmentFact, LeafFact]] = {}
+    not_operating, unit_inactive = [], []
+    for d in inp.responsible:
+        if not d.active:
             continue
-        if not r.verified:
-            actionable.append(f"'{d.name}' has an unverified rule for {inp.category}")
-        elif not r.active:
-            actionable.append(f"'{d.name}' has an inactive rule for {inp.category}")
-        elif not d.active:
-            actionable.append(f"'{d.name}' has a verified rule but the department is inactive")
-    if actionable:
-        candidates["actionable"] = actionable
-        return RoutingResult(
-            RoutingStatus.PENDING_REVIEW,
-            "INCOMPLETE_CONFIGURATION",
-            f"Location is within {jnames}, but the responsibility configuration is incomplete: "
-            + "; ".join(sorted(actionable)) + ".",
-            candidates=candidates,
-        )
+        for leaf in inp.leaves:
+            u = leaf.units.get(d.id)
+            if u is None:
+                not_operating.append(f"'{d.name}' is not mapped to {leaf.path}")
+            elif not u.active:
+                unit_inactive.append(f"'{d.name}' is deactivated in {u.jurisdiction_name}")
+            else:
+                units[u.id] = (u, d, leaf)
+    candidates["units"] = [{"id": str(u.id), "department": d.name, "jurisdiction": u.jurisdiction_name}
+                           for u, d, _ in units.values()]
 
+    if len(units) > 1:
+        names = ", ".join(sorted(f"{d.name} ({u.jurisdiction_name})" for u, d, _ in units.values()))
+        return RoutingResult(pending, "MULTIPLE_DEPARTMENTS",
+                             f"Location is within {places}. More than one department unit is responsible for "
+                             f"{inp.category}: {names}. No department was selected automatically.",
+                             jurisdiction_id=inp.leaves[0].id, candidates=candidates)
+    if not units:
+        problems = sorted(set(not_operating + unit_inactive + [f"'{n}' is inactive" for n in inactive]))
+        candidates["actionable"] = problems
+        return RoutingResult(pending, "DEPARTMENT_NOT_ACTIVE_HERE",
+                             f"Location is within {places}, but no active department unit handles {inp.category} "
+                             f"here: {'; '.join(problems)}.",
+                             jurisdiction_id=inp.leaves[0].id, candidates=candidates)
+
+    unit, dept, leaf = next(iter(units.values()))
+    officer, officer_reason = choose_officer(inp.officers.get(unit.id, []))
     return RoutingResult(
-        RoutingStatus.UNROUTED,
-        "NO_ELIGIBLE_DEPARTMENT",
-        f"Location is within {jnames}, but no department in this jurisdiction has any responsibility rule "
-        f"for {inp.category}.",
-        candidates=candidates,
+        RoutingStatus.ROUTED, "ROUTED",
+        f"Location is within {leaf.path}. '{dept.name}' has an active responsibility for {inp.category} and "
+        f"operates here through its {unit.jurisdiction_name} unit.",
+        department_id=dept.id, unit_id=unit.id, jurisdiction_id=leaf.id,
+        officer_id=officer.id if officer else None, officer_reason=officer_reason, candidates=candidates,
     )

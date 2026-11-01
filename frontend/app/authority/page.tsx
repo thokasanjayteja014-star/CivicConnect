@@ -1,88 +1,70 @@
 "use client";
 
-import { useState } from "react";
-import { useRequireRole } from "@/components/AuthProvider";
-import { CATEGORY_LABEL, STATUS_LABEL } from "@/components/labels";
-import { EmptyState, ErrorBox, PageHeader, Spinner, Stat, inputCls } from "@/components/ui";
+import Link from "next/link";
+import { useAuth } from "@/components/AuthProvider";
+import { useT } from "@/components/I18nProvider";
+import { Card, ErrorBox, Notice, PageHeader, Spinner, Stat, TableWrap, tableCls, tdCls, thCls } from "@/components/ui";
 import { ComplaintTable } from "@/features/complaints";
 import { useApi } from "@/hooks/useApi";
-import { CATEGORIES, STATUSES, type ComplaintListItem } from "@/types";
+import type { ComplaintListItem } from "@/types";
 
-export default function AuthorityDashboard() {
-  const { user, allowed } = useRequireRole(["OFFICER", "DEPARTMENT_ADMIN", "SYSTEM_ADMIN"]);
-  const [f, setF] = useState({ category: "", priority: "", status: "", date_from: "", date_to: "", officer_id: "", q: "", sort: "priority",
-    min_lat: "", max_lat: "", min_lng: "", max_lng: "" });
-  const params = new URLSearchParams();
-  Object.entries(f).forEach(([k, v]) => {
-    if (!v) return;
-    if (k === "priority" && v === "UNSCORED") params.set("unscored", "true");
-    else if (k === "date_from" || k === "date_to") params.set(k, new Date(v + (k === "date_to" ? "T23:59:59" : "T00:00:00")).toISOString());
-    else params.set(k, v);
-  });
-  const qs = params.toString();
-  const dash = useApi<any>(allowed ? "/api/authority/dashboard" : null);
-  const list = useApi<{ total: number; items: ComplaintListItem[] }>(allowed ? `/api/authority/complaints?${qs}` : null, [qs]);
-  const officers = useApi<any[]>(allowed && user?.role !== "SYSTEM_ADMIN" ? "/api/authority/officers" : null);
-
-  if (!allowed) return <Spinner />;
+export default function AuthorityOverview() {
+  const t = useT();
+  const { user } = useAuth();
+  const officer = user?.role === "OFFICER";
+  const admin = user?.role === "SYSTEM_ADMIN";
+  const dash = useApi<any>("/api/authority/dashboard");
+  const upcoming = useApi<{ total: number; items: ComplaintListItem[] }>(
+    officer ? "/api/authority/complaints?assignment=mine&status_group=open&sort=due&limit=8" : "/api/authority/complaints?status_group=open&sort=due&limit=8");
   const d = dash.data;
-  const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setF({ ...f, [k]: e.target.value });
-  const noDept = user?.role !== "SYSTEM_ADMIN" && !user?.department_id;
+  const unitLabel = d?.unit ? `${d.unit.department} · ${d.unit.jurisdiction_path}` : admin ? t("All departments") : "";
 
   return (
-    <div className="space-y-6">
-      <PageHeader title={user?.role === "SYSTEM_ADMIN" ? "All routed complaints" : `${user?.department_name ?? "Department"} dashboard`}
-        subtitle="Figures are computed live from complaint records in your authorized scope." />
-      {noDept && <ErrorBox error={{ message: "Your account is not linked to an active department. Ask a system administrator to configure it." }} />}
+    <div className="space-y-5">
+      <PageHeader title={officer ? t("My work") : t("Department overview")} subtitle={unitLabel} />
+      {!admin && !user?.unit_id && <Notice tone="warn">{t("Your account is not linked to a department unit yet. Ask the main administration to configure it.")}</Notice>}
       <ErrorBox error={dash.error} onRetry={dash.reload} />
-      {d && (
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-7">
-          <Stat label="Total in scope" value={d.total} />
-          <Stat label="Awaiting review" value={d.awaiting_review} hint="New or reopened" />
-          <Stat label="Assigned" value={d.assigned} />
-          <Stat label="In progress" value={d.in_progress} />
-          <Stat label="On hold" value={d.on_hold} />
-          <Stat label="Awaiting verification" value={d.awaiting_verification} />
-          <Stat label="Safety reviews" value={d.prompt_safety_reviews} hint="Potentially immediate danger" />
+      {!d ? <Spinner /> : officer ? (
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <Stat label={t("Assigned to me")} value={d.assigned_to_me} href="/authority/complaints?assignment=mine" />
+          <Stat label={t("Awaiting my acceptance")} value={d.awaiting_acceptance} tone={d.awaiting_acceptance ? "warn" : undefined} href="/authority/complaints?assignment=awaiting_acceptance" />
+          <Stat label={t("Overdue")} value={d.my_overdue} tone={d.my_overdue ? "danger" : undefined} href="/authority/complaints?assignment=mine&overdue=true" />
+          <Stat label={t("Awaiting verification")} value={d.awaiting_verification} hint={t("Resolved by you, pending review")} />
         </div>
-      )}
-      {d?.officer_workload?.length > 0 && (
-        <details className="rounded-lg border border-slate-200 bg-white p-4 text-sm">
-          <summary className="cursor-pointer font-medium text-navy-900">Officer workload ({d.officer_workload.length})</summary>
-          <ul className="mt-2 grid gap-1 sm:grid-cols-2 lg:grid-cols-3">
-            {d.officer_workload.map((o: any) => <li key={o.officer_id}>{o.full_name} <span className="text-slate-500">({o.designation})</span>: {o.active_assignments} active</li>)}
-          </ul>
-        </details>
+      ) : (
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+          <Stat label={t("Open complaints")} value={d.total - d.verified_resolved - d.rejected} href="/authority/complaints?status_group=open" />
+          <Stat label={t("Awaiting assignment")} value={d.awaiting_assignment} tone={d.awaiting_assignment ? "warn" : undefined} href="/authority/queue" />
+          <Stat label={t("In progress")} value={d.assigned + d.in_progress} hint={t("{n} on hold", { n: d.on_hold })} />
+          <Stat label={t("Awaiting verification")} value={d.awaiting_verification} tone={d.awaiting_verification ? "warn" : undefined} href="/authority/complaints?status=RESOLVED_AWAITING_VERIFICATION" />
+          <Stat label={t("Overdue")} value={d.overdue} tone={d.overdue ? "danger" : undefined} href="/authority/complaints?overdue=true" />
+          <Stat label={t("Escalated")} value={d.escalated} tone={d.escalated ? "warn" : undefined} href="/authority/escalations" />
+          <Stat label={t("Reopening requests")} value={d.pending_reopen_reviews} href="/authority/reopen" />
+          <Stat label={t("Safety reviews")} value={d.prompt_safety_reviews} tone={d.prompt_safety_reviews ? "danger" : undefined} hint={t("Possible immediate danger")} />
+          <Stat label={t("Verified resolved")} value={d.verified_resolved} tone="ok" />
+          <Stat label={t("Total handled")} value={d.total} />
+        </div>
       )}
 
-      <section className="space-y-3">
-        <div className="grid gap-3 rounded-lg border border-slate-200 bg-white p-4 text-xs text-slate-600 sm:grid-cols-3 lg:grid-cols-6">
-          <label>Search<input className={inputCls + " mt-1"} value={f.q} onChange={set("q")} placeholder="Reference or title" /></label>
-          <label>Category<select className={inputCls + " mt-1"} value={f.category} onChange={set("category")}><option value="">All</option>{CATEGORIES.map((c) => <option key={c} value={c}>{CATEGORY_LABEL[c]}</option>)}</select></label>
-          <label>Priority<select className={inputCls + " mt-1"} value={f.priority} onChange={set("priority")}><option value="">All</option>{["CRITICAL", "HIGH", "MEDIUM", "LOW"].map((p) => <option key={p}>{p}</option>)}<option value="UNSCORED">Provisional / unscored</option></select></label>
-          <label>Status<select className={inputCls + " mt-1"} value={f.status} onChange={set("status")}><option value="">All</option>{STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}</select></label>
-          <label>From<input type="date" className={inputCls + " mt-1"} value={f.date_from} onChange={set("date_from")} /></label>
-          <label>To<input type="date" className={inputCls + " mt-1"} value={f.date_to} onChange={set("date_to")} /></label>
-          {officers.data && <label>Assigned officer<select className={inputCls + " mt-1"} value={f.officer_id} onChange={set("officer_id")}><option value="">Any</option>{officers.data.map((o) => <option key={o.officer_id} value={o.officer_id}>{o.full_name}</option>)}</select></label>}
-          <label>Sort<select className={inputCls + " mt-1"} value={f.sort} onChange={set("sort")}><option value="priority">Priority first</option><option value="newest">Newest</option><option value="oldest">Oldest</option></select></label>
-          <fieldset className="col-span-2 grid grid-cols-4 gap-1 sm:col-span-3 lg:col-span-4">
-            <legend className="mb-1">Geographic area (bounding box, optional)</legend>
-            <input aria-label="Min latitude" className={inputCls} placeholder="min lat" value={f.min_lat} onChange={set("min_lat")} />
-            <input aria-label="Max latitude" className={inputCls} placeholder="max lat" value={f.max_lat} onChange={set("max_lat")} />
-            <input aria-label="Min longitude" className={inputCls} placeholder="min lng" value={f.min_lng} onChange={set("min_lng")} />
-            <input aria-label="Max longitude" className={inputCls} placeholder="max lng" value={f.max_lng} onChange={set("max_lng")} />
-          </fieldset>
-        </div>
-        <ErrorBox error={list.error} onRetry={list.reload} />
-        {list.loading && !list.data ? <Spinner label="Loading complaints…" /> : list.data && list.data.items.length === 0 ? (
-          <EmptyState title="No complaints in your scope" body={d?.total ? "No complaints match these filters." : "Complaints routed to your department will appear here once citizens report them."} />
-        ) : list.data && (
-          <>
-            <p className="text-xs text-slate-500">{list.data.total} complaint(s)</p>
-            <ComplaintTable items={list.data.items} hrefBase="/authority/complaints" staff />
-          </>
+      <div className="grid gap-5 xl:grid-cols-3">
+        <Card title={officer ? t("My open complaints, nearest deadline first") : t("Open complaints, nearest deadline first")} className="xl:col-span-2" padded={false}
+          actions={<Link href="/authority/complaints" className="text-xs font-medium text-navy-700 underline">{t("View all")}</Link>}>
+          {upcoming.loading && !upcoming.data ? <Spinner /> : upcoming.data?.items.length ? <ComplaintTable items={upcoming.data.items} hrefBase="/authority/complaints" staff />
+            : <p className="p-4 text-sm text-slate-500">{t("No open complaints.")}</p>}
+        </Card>
+        {!officer && d?.officer_workload && (
+          <Card title={t("Officer workload")} padded={false} actions={!admin && <Link href="/authority/officers" className="text-xs font-medium text-navy-700 underline">{t("Details")}</Link>}>
+            {d.officer_workload.length === 0 ? <p className="p-4 text-sm text-slate-500">{t("No officers in this unit yet.")}</p> : (
+              <TableWrap><table className={tableCls}>
+                <thead><tr><th className={thCls}>{t("Officer")}</th><th className={thCls}>{t("Active")}</th></tr></thead>
+                <tbody className="divide-y divide-slate-100">{d.officer_workload.map((o: any) => (
+                  <tr key={o.officer_id}><td className={tdCls}>{o.full_name}<div className="text-xs text-slate-500">{o.designation}</div></td><td className={tdCls + " font-semibold tabular-nums"}>{o.active_assignments}</td></tr>
+                ))}</tbody>
+              </table></TableWrap>
+            )}
+          </Card>
         )}
-      </section>
+      </div>
     </div>
   );
 }

@@ -22,7 +22,7 @@ function LoginForm() {
       <h1 className="text-2xl font-semibold text-navy-900">{t("Log in")}</h1>
       <p className="mt-1 text-sm text-slate-600">{t("Citizens, department officers and administrators all sign in here.")}</p>
       <form
-        className="mt-6 space-y-4 rounded-lg border border-slate-200 bg-white p-6"
+        className="mt-6 space-y-4 rounded-md border border-slate-200 bg-white p-6"
         onSubmit={async (e) => {
           e.preventDefault();
           setBusy(true);
@@ -46,7 +46,7 @@ function LoginForm() {
         </Field>
         <Button type="submit" loading={busy} className="w-full">{t("Log in")}</Button>
         <p className="text-center text-sm text-slate-600">
-          {t("New here?")} <Link href={`/register${next ? `?next=${encodeURIComponent(next)}` : ""}`} className="font-medium text-teal-700 underline">{t("Create a citizen account")}</Link>
+          {t("New here?")} <Link href={`/register${next ? `?next=${encodeURIComponent(next)}` : ""}`} className="font-medium text-navy-700 underline">{t("Create a citizen account")}</Link>
         </p>
       </form>
     </div>

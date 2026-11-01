@@ -22,7 +22,12 @@ def _bearer(request: Request) -> str | None:
 
 
 def build_actor(db: Session, user: User) -> Actor:
+    from app.services.hierarchy import descendant_ids
+
     officer = db.scalar(select(Officer).where(Officer.user_id == user.id))
+    areas: frozenset = frozenset()
+    if officer and user.role == Role.OFFICER and officer.areas:
+        areas = frozenset(descendant_ids(db, [a.jurisdiction_id for a in officer.areas]))
     return Actor(
         user_id=user.id,
         role=user.role,
@@ -31,6 +36,8 @@ def build_actor(db: Session, user: User) -> Actor:
         officer_id=officer.id if officer else None,
         officer_active=bool(officer and officer.active),
         explicit_permissions={p.permission for p in user.permissions},
+        unit_id=officer.unit_id if officer else None,
+        area_ids=areas,
     )
 
 

@@ -89,14 +89,14 @@ export function NotificationSettings() {
       {msg && <Notice tone="success">{msg}</Notice>}
       <div className="text-sm">
         <div className={row}>
-          <span className="flex items-center gap-2"><Mail className="h-4 w-4 text-teal-700" /> {t("Email")} <span className="text-xs text-slate-500">({user.email})</span></span>
+          <span className="flex items-center gap-2"><Mail className="h-4 w-4 text-navy-700" /> {t("Email")} <span className="text-xs text-slate-500">({user.email})</span></span>
           {channels?.email ? (
             <label className="flex items-center gap-2"><input type="checkbox" checked={user.notify_email} disabled={saving}
               onChange={(e) => save({ notify_email: e.target.checked })} /> {t("Send me emails")}</label>
           ) : notSetUp}
         </div>
         <div className={row}>
-          <span className="flex items-center gap-2"><MessageSquare className="h-4 w-4 text-teal-700" /> {t("SMS")}</span>
+          <span className="flex items-center gap-2"><MessageSquare className="h-4 w-4 text-navy-700" /> {t("SMS")}</span>
           {channels?.sms ? (
             <div className="flex flex-wrap items-center gap-2">
               <label htmlFor="sms-phone" className="sr-only">{t("Mobile number")}</label>
@@ -107,7 +107,7 @@ export function NotificationSettings() {
           ) : notSetUp}
         </div>
         <div className={row}>
-          <span className="flex items-center gap-2"><BellRing className="h-4 w-4 text-teal-700" /> {t("Browser notifications")}</span>
+          <span className="flex items-center gap-2"><BellRing className="h-4 w-4 text-navy-700" /> {t("Browser notifications")}</span>
           {!channels?.push ? notSetUp : pushState === "unsupported" ? <span className="text-xs text-slate-500">{t("This browser does not support notifications.")}</span>
             : pushState === "denied" ? <span className="text-xs text-amber-700">{t("Blocked in your browser settings. Allow notifications for this site to turn them on.")}</span>
             : pushState === "on" ? <Button variant="secondary" onClick={disablePush}>{t("Turn off on this device")}</Button>

@@ -240,7 +240,7 @@ def history(complaint_id: uuid.UUID, actor: Actor = Depends(get_current_actor), 
     complaint = get_visible_complaint(db, actor, complaint_id)
     rows = db.scalars(select(StatusHistory).where(StatusHistory.complaint_id == complaint.id).order_by(StatusHistory.created_at)).all()
     return [
-        {"previous_status": h.previous_status, "new_status": h.new_status, "actor_role": ROLE_LABEL[h.actor_role],
+        {"previous_status": h.previous_status, "new_status": h.new_status, "actor_role": ROLE_LABEL[h.actor_role] if h.actor_role else "CivicConnect (automatic)",
          **({"actor_id": h.actor_id} if actor.is_staff else {}), "remarks": h.remarks, "created_at": h.created_at}
         for h in rows
     ]

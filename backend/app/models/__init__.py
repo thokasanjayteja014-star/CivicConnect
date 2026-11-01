@@ -47,7 +47,11 @@ from app.models.enums import (
     ReviewStatus,
     Role,
     RoutingStatus,
+    EscalationStatus,
+    PublicIssueProgress,
+    PublicIssueStatus,
     VerificationDecisionType,
+    VerificationStatus,
 )
 
 
@@ -106,69 +110,105 @@ class RevokedToken(Base):
     expires_at: Mapped[datetime] = mapped_column(TS)
 
 
-jurisdiction_departments = Table(
-    "jurisdiction_departments",
-    Base.metadata,
-    Column("jurisdiction_id", Uuid, ForeignKey("jurisdictions.id", ondelete="CASCADE"), primary_key=True),
-    Column("department_id", Uuid, ForeignKey("departments.id", ondelete="CASCADE"), primary_key=True),
-)
-
-
 class Department(Base):
+    """Central department registry entry. Created once, then activated per jurisdiction via DepartmentUnit."""
     __tablename__ = "departments"
     id: Mapped[uuid.UUID] = _pk()
     name: Mapped[str] = mapped_column(String(160), unique=True)
     description: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str | None] = mapped_column(String(80))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
-    is_prototype: Mapped[bool] = mapped_column(Boolean, default=True)
+    verification_status: Mapped[VerificationStatus] = mapped_column(
+        _enum(VerificationStatus), default=VerificationStatus.PENDING_VERIFICATION)
+    is_prototype: Mapped[bool] = mapped_column(Boolean, default=False)  # mirrors verification_status == PROTOTYPE
     source_reference: Mapped[str | None] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
 
     rules: Mapped[list["ResponsibilityRule"]] = relationship(back_populates="department")
-    jurisdictions: Mapped[list["Jurisdiction"]] = relationship(
-        secondary=jurisdiction_departments, back_populates="departments"
-    )
+    units: Mapped[list["DepartmentUnit"]] = relationship(back_populates="department")
 
     @property
     def supported_categories(self) -> list[Category]:
-        return sorted({r.category for r in self.rules if r.active and r.verified}, key=lambda c: c.value)
+        return sorted({r.category for r in self.rules if r.active}, key=lambda c: c.value)
+
+
+class Jurisdiction(Base):
+    """Node in the administrative hierarchy (state, district, municipality, ward, ...). Levels are not fixed."""
+    __tablename__ = "jurisdictions"
+    id: Mapped[uuid.UUID] = _pk()
+    name: Mapped[str] = mapped_column(String(160))
+    jurisdiction_type: Mapped[str] = mapped_column(String(40), default="OTHER", server_default="OTHER")
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("jurisdictions.id", ondelete="RESTRICT"), index=True)
+    description: Mapped[str | None] = mapped_column(Text)
+    boundary = mapped_column(Geometry(geometry_type="GEOMETRY", srid=4326, spatial_index=True), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    verification_status: Mapped[VerificationStatus] = mapped_column(
+        _enum(VerificationStatus), default=VerificationStatus.PENDING_VERIFICATION)
+    is_prototype: Mapped[bool] = mapped_column(Boolean, default=False)
+    source_reference: Mapped[str | None] = mapped_column(String(500))
+    last_verified_at: Mapped[datetime | None] = mapped_column(TS)
+    created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
+    parent: Mapped["Jurisdiction | None"] = relationship(remote_side="Jurisdiction.id")
+    units: Mapped[list["DepartmentUnit"]] = relationship(back_populates="jurisdiction")
+
+
+class DepartmentUnit(Base):
+    """A registry department operating in one jurisdiction (department-jurisdiction mapping).
+
+    The unit covers its jurisdiction and every descendant, unless a deeper unit of the
+    same department exists. Personnel belong to a unit, so District A and District B
+    instances of the same department never share complaints.
+    """
+    __tablename__ = "department_units"
+    __table_args__ = (UniqueConstraint("department_id", "jurisdiction_id", name="uq_department_unit"),)
+    id: Mapped[uuid.UUID] = _pk()
+    department_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("departments.id", ondelete="RESTRICT"), index=True)
+    jurisdiction_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("jurisdictions.id", ondelete="RESTRICT"), index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
+    department: Mapped[Department] = relationship(back_populates="units")
+    jurisdiction: Mapped[Jurisdiction] = relationship(back_populates="units")
 
 
 class Officer(Base):
+    """Department personnel record (department administrators and officers)."""
     __tablename__ = "officers"
     id: Mapped[uuid.UUID] = _pk()
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), unique=True)
     department_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("departments.id"))
+    unit_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("department_units.id", ondelete="RESTRICT"), index=True)
     designation: Mapped[str] = mapped_column(String(120))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     user: Mapped[User] = relationship(back_populates="officer")
     department: Mapped[Department] = relationship()
+    unit: Mapped[DepartmentUnit | None] = relationship()
+    areas: Mapped[list["OfficerArea"]] = relationship(back_populates="officer", cascade="all, delete-orphan")
 
 
-class Jurisdiction(Base):
-    __tablename__ = "jurisdictions"
+class OfficerArea(Base):
+    """Operational area of an officer: a jurisdiction (and its descendants) inside the officer's unit."""
+    __tablename__ = "officer_areas"
+    __table_args__ = (UniqueConstraint("officer_id", "jurisdiction_id", name="uq_officer_area"),)
     id: Mapped[uuid.UUID] = _pk()
-    name: Mapped[str] = mapped_column(String(160))
-    boundary = mapped_column(Geometry(geometry_type="GEOMETRY", srid=4326, spatial_index=True), nullable=False)
-    active: Mapped[bool] = mapped_column(Boolean, default=True)
-    is_prototype: Mapped[bool] = mapped_column(Boolean, default=True)
-    source_reference: Mapped[str | None] = mapped_column(String(500))
-    last_verified_at: Mapped[datetime | None] = mapped_column(TS)
-    created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
-    departments: Mapped[list[Department]] = relationship(
-        secondary=jurisdiction_departments, back_populates="jurisdictions"
-    )
+    officer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("officers.id", ondelete="CASCADE"), index=True)
+    jurisdiction_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("jurisdictions.id", ondelete="RESTRICT"))
+    officer: Mapped[Officer] = relationship(back_populates="areas")
+    jurisdiction: Mapped[Jurisdiction] = relationship()
 
 
 class ResponsibilityRule(Base):
-    """Verified category-to-department responsibility mapping."""
+    """Category-to-department responsibility (e.g. Roads: 'Pothole repair' for ROAD_INFRASTRUCTURE)."""
     __tablename__ = "responsibility_rules"
     __table_args__ = (UniqueConstraint("department_id", "category"),)
     id: Mapped[uuid.UUID] = _pk()
     department_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("departments.id"))
     category: Mapped[Category] = mapped_column(_enum(Category))
+    name: Mapped[str | None] = mapped_column(String(160))
+    description: Mapped[str | None] = mapped_column(Text)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
-    verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    verified: Mapped[bool] = mapped_column(Boolean, default=False)  # legacy flag, mirrors status == VERIFIED
+    verification_status: Mapped[VerificationStatus] = mapped_column(
+        _enum(VerificationStatus), default=VerificationStatus.PENDING_VERIFICATION)
     source_reference: Mapped[str | None] = mapped_column(String(500))
     verified_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     verified_at: Mapped[datetime | None] = mapped_column(TS)
@@ -238,8 +278,11 @@ class Complaint(Base):
 
     status: Mapped[ComplaintStatus] = mapped_column(_enum(ComplaintStatus), default=ComplaintStatus.SUBMITTED)
     department_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("departments.id"))
+    department_unit_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("department_units.id"), index=True)
     jurisdiction_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("jurisdictions.id"))
     routing_status: Mapped[RoutingStatus] = mapped_column(_enum(RoutingStatus))
+    # Resolution deadline from the escalation policy for the complaint's priority.
+    due_at: Mapped[datetime | None] = mapped_column(TS, index=True)
 
     ai_analysis_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("ai_analyses.id"))
     ai_review_required: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -259,6 +302,7 @@ class Complaint(Base):
 
     citizen: Mapped[User] = relationship(foreign_keys=[citizen_id])
     department: Mapped[Department | None] = relationship()
+    department_unit: Mapped[DepartmentUnit | None] = relationship()
     jurisdiction: Mapped[Jurisdiction | None] = relationship()
     media: Mapped[list["Media"]] = relationship(back_populates="complaint", order_by="Media.uploaded_at")
 
@@ -287,7 +331,9 @@ class RoutingDecision(Base):
     id: Mapped[uuid.UUID] = _pk()
     complaint_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("complaints.id"), index=True)
     department_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("departments.id"))
+    department_unit_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("department_units.id"))
     jurisdiction_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("jurisdictions.id"))
+    officer_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("officers.id"))
     routing_status: Mapped[RoutingStatus] = mapped_column(_enum(RoutingStatus))
     reason_code: Mapped[str] = mapped_column(String(60))
     rule_version: Mapped[str] = mapped_column(String(40))
@@ -361,10 +407,13 @@ class Assignment(Base):
     id: Mapped[uuid.UUID] = _pk()
     complaint_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("complaints.id"), index=True)
     department_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("departments.id"))
+    department_unit_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("department_units.id"))
     officer_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("officers.id"))
-    assigned_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    assigned_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))  # NULL = routing engine
+    automatic: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     reason: Mapped[str | None] = mapped_column(Text)
     assigned_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
+    accepted_at: Mapped[datetime | None] = mapped_column(TS)
     assignment_status: Mapped[AssignmentStatus] = mapped_column(_enum(AssignmentStatus), default=AssignmentStatus.ACTIVE)
     officer: Mapped[Officer | None] = relationship()
 
@@ -376,8 +425,8 @@ class StatusHistory(Base):
     complaint_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("complaints.id"), index=True)
     previous_status: Mapped[ComplaintStatus | None] = mapped_column(_enum(ComplaintStatus))
     new_status: Mapped[ComplaintStatus] = mapped_column(_enum(ComplaintStatus))
-    actor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
-    actor_role: Mapped[Role] = mapped_column(_enum(Role))
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))  # NULL = system (routing engine)
+    actor_role: Mapped[Role | None] = mapped_column(_enum(Role))
     remarks: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
 
@@ -484,3 +533,85 @@ class AuditLog(Base):
     details: Mapped[dict] = mapped_column(JSON, default=dict)
     request_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(TS, default=utcnow, index=True)
+
+
+class EscalationPolicy(Base):
+    """Resolution deadline per priority (optionally per department). Missing rows fall back to code defaults."""
+    __tablename__ = "escalation_policies"
+    __table_args__ = (UniqueConstraint("department_id", "priority_level", name="uq_escalation_policy"),)
+    id: Mapped[uuid.UUID] = _pk()
+    department_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("departments.id", ondelete="CASCADE"))
+    priority_level: Mapped[str] = mapped_column(String(20))  # LOW | MEDIUM | HIGH | CRITICAL | UNSCORED
+    resolve_within_hours: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
+
+
+class Escalation(Base):
+    __tablename__ = "escalations"
+    id: Mapped[uuid.UUID] = _pk()
+    complaint_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("complaints.id"), index=True)
+    department_unit_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("department_units.id"))
+    level: Mapped[int] = mapped_column(Integer, default=1)
+    reason_code: Mapped[str] = mapped_column(String(40))  # OVERDUE | MANUAL
+    reason: Mapped[str] = mapped_column(Text)
+    raised_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))  # NULL = automatic
+    status: Mapped[EscalationStatus] = mapped_column(_enum(EscalationStatus), default=EscalationStatus.OPEN)
+    resolution_note: Mapped[str | None] = mapped_column(Text)
+    resolved_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(TS)
+    complaint: Mapped[Complaint] = relationship()
+
+
+class PublicIssue(Base):
+    """A verified issue of wider public impact, published for community transparency.
+
+    Holds only public information; linked complaints keep their private details.
+    """
+    __tablename__ = "public_issues"
+    id: Mapped[uuid.UUID] = _pk()
+    title: Mapped[str] = mapped_column(String(160))
+    description: Mapped[str] = mapped_column(Text)
+    general_location: Mapped[str | None] = mapped_column(String(200))
+    latitude: Mapped[float | None] = mapped_column(Float)   # rounded, approximate
+    longitude: Mapped[float | None] = mapped_column(Float)
+    category: Mapped[Category] = mapped_column(_enum(Category))
+    department_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("departments.id"))
+    department_unit_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("department_units.id"))
+    jurisdiction_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("jurisdictions.id"))
+    status: Mapped[PublicIssueStatus] = mapped_column(_enum(PublicIssueStatus), default=PublicIssueStatus.DRAFT)
+    progress: Mapped[PublicIssueProgress] = mapped_column(_enum(PublicIssueProgress), default=PublicIssueProgress.REPORTED)
+    impact_level: Mapped[str | None] = mapped_column(String(20))  # LOW / MODERATE / HIGH (staff assessment)
+    impact_assessment: Mapped[str | None] = mapped_column(Text)
+    resolution_info: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    verified_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+    verified_at: Mapped[datetime | None] = mapped_column(TS)
+    published_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+    published_at: Mapped[datetime | None] = mapped_column(TS)
+    resolved_at: Mapped[datetime | None] = mapped_column(TS)
+    created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(TS, default=utcnow, onupdate=utcnow)
+    department: Mapped[Department | None] = relationship()
+    jurisdiction: Mapped[Jurisdiction | None] = relationship()
+
+
+class PublicIssueComplaint(Base):
+    __tablename__ = "public_issue_complaints"
+    __table_args__ = (UniqueConstraint("complaint_id", name="uq_public_issue_complaint"),)
+    id: Mapped[uuid.UUID] = _pk()
+    issue_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("public_issues.id", ondelete="CASCADE"), index=True)
+    complaint_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("complaints.id"))
+    linked_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    linked_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
+
+
+class PublicIssueUpdate(Base):
+    """Public update history (immutable)."""
+    __tablename__ = "public_issue_updates"
+    id: Mapped[uuid.UUID] = _pk()
+    issue_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("public_issues.id", ondelete="CASCADE"), index=True)
+    message: Mapped[str] = mapped_column(Text)
+    progress: Mapped[PublicIssueProgress | None] = mapped_column(_enum(PublicIssueProgress))
+    author_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)

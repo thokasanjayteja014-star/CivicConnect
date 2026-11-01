@@ -8,6 +8,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError, VerifyMismatchError
 
 from app.core.config import get_settings
+from app.core.environment import PRODUCTION, current_env
 from app.core.errors import err
 
 _hasher = PasswordHasher()
@@ -38,6 +39,7 @@ def create_access_token(user_id: uuid.UUID, role: str) -> tuple[str, datetime]:
         "sub": str(user_id),
         "role": role,
         "typ": "access",
+        "env": current_env(),
         "jti": secrets.token_hex(16),
         "exp": expires,
         "iat": datetime.now(timezone.utc),
@@ -52,11 +54,15 @@ def decode_token(token: str, expected_type: str = "access") -> dict:
         raise err("UNAUTHENTICATED")
     if payload.get("typ") != expected_type:
         raise err("UNAUTHENTICATED")
+    # Tokens are bound to the environment that issued them (production vs demo).
+    if payload.get("env", PRODUCTION) != current_env():
+        raise err("UNAUTHENTICATED")
     return payload
 
 
 def create_media_token(media_id: uuid.UUID, user_id: uuid.UUID | None) -> tuple[str, datetime]:
     """Short-lived signed link for an already-authorized media read."""
     expires = datetime.now(timezone.utc) + timedelta(seconds=get_settings().MEDIA_LINK_TTL_SECONDS)
-    payload = {"typ": "media", "mid": str(media_id), "sub": str(user_id) if user_id else None, "exp": expires}
+    payload = {"typ": "media", "mid": str(media_id), "sub": str(user_id) if user_id else None, "exp": expires,
+               "env": current_env()}
     return jwt.encode(payload, _secret(), algorithm=ALGORITHM), expires

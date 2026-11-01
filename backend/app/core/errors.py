@@ -50,6 +50,7 @@ _CATALOGUE: dict[str, tuple[int, str]] = {
     "EVIDENCE_REQUIRED": (409, "At least one resolution evidence record is required before this action."),
     "VALIDATION_ERROR": (422, "Some fields are invalid. Please review and try again."),
     "NOT_FOUND": (404, "The requested resource could not be found."),
+    "DELETE_BLOCKED": (409, "This record is still in use and cannot be deleted. Deactivate it instead."),
     "CONFLICT": (409, "The request conflicts with the current state of the resource."),
     "INVALID_CREDENTIALS": (401, "The email or password is incorrect."),
     "ACCOUNT_DISABLED": (403, "This account is not active."),

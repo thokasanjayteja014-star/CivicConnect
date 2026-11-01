@@ -41,7 +41,7 @@ class RegisterRequest(BaseModel):
     phone: str | None = Field(default=None, max_length=32, pattern=r"^[+0-9 ()-]{6,32}$")
 
 
-LANGUAGES = ("en", "hi", "kn")
+LANGUAGES = ("en", "hi", "kn", "te")
 
 
 class PreferencesUpdate(BaseModel):
@@ -49,7 +49,7 @@ class PreferencesUpdate(BaseModel):
     notify_email: bool | None = None
     notify_sms: bool | None = None
     notify_push: bool | None = None
-    preferred_language: Literal["en", "hi", "kn"] | None = None
+    preferred_language: Literal["en", "hi", "kn", "te"] | None = None
     # E.164 format so SMS providers accept it, e.g. +919876543210. Empty string clears it.
     phone: str | None = Field(default=None, max_length=16, pattern=r"^(\+[1-9][0-9]{7,14})?$")
 
@@ -83,6 +83,9 @@ class MeOut(UserOut):
     department_id: uuid.UUID | None = None
     department_name: str | None = None
     officer_id: uuid.UUID | None = None
+    unit_id: uuid.UUID | None = None
+    jurisdiction_name: str | None = None
+    environment: str = "production"
     permissions: list[Permission] = []
 
 
@@ -249,6 +252,7 @@ class PublicationRequest(BaseModel):
 
 class RoutingOverride(BaseModel):
     department_id: uuid.UUID
+    unit_id: uuid.UUID | None = None
     reason: str = Field(min_length=3, max_length=2000)
 
 
@@ -256,36 +260,63 @@ class RoutingOverride(BaseModel):
 class DepartmentIn(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     description: str | None = Field(default=None, max_length=2000)
+    category: str | None = Field(default=None, max_length=80)
     active: bool = True
-    is_prototype: bool = True
+    is_prototype: bool = False
     source_reference: str | None = Field(default=None, max_length=500)
 
 
 class DepartmentPatch(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=160)
     description: str | None = Field(default=None, max_length=2000)
+    category: str | None = Field(default=None, max_length=80)
     active: bool | None = None
     is_prototype: bool | None = None
     source_reference: str | None = Field(default=None, max_length=500)
 
 
 class JurisdictionIn(BaseModel):
-    id: uuid.UUID | None = Field(default=None, description="Provide to update an existing jurisdiction")
     name: str = Field(min_length=2, max_length=160)
-    boundary: dict[str, Any]
-    department_ids: list[uuid.UUID] = []
+    jurisdiction_type: str = Field(default="OTHER", min_length=2, max_length=40)
+    parent_id: uuid.UUID | None = None
+    description: str | None = Field(default=None, max_length=2000)
+    boundary: dict[str, Any] | None = None
+    department_ids: list[uuid.UUID] = Field(default=[], description="Convenience: also activate these departments here")
     active: bool = True
-    is_prototype: bool = True
+    is_prototype: bool = False
     source_reference: str | None = Field(default=None, max_length=500)
-    last_verified_at: datetime | None = None
+
+
+class JurisdictionPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=160)
+    jurisdiction_type: str | None = Field(default=None, min_length=2, max_length=40)
+    parent_id: uuid.UUID | None = None
+    description: str | None = Field(default=None, max_length=2000)
+    boundary: dict[str, Any] | None = None
+    active: bool | None = None
+    is_prototype: bool | None = None
+    source_reference: str | None = Field(default=None, max_length=500)
+
+
+class UnitIn(BaseModel):
+    department_id: uuid.UUID
+    jurisdiction_id: uuid.UUID
+    active: bool = True
+
+
+class UnitPatch(BaseModel):
+    active: bool
 
 
 class ResponsibilityIn(BaseModel):
     department_id: uuid.UUID
     category: Category
+    name: str | None = Field(default=None, max_length=160)
+    description: str | None = Field(default=None, max_length=2000)
     active: bool = True
-    verified: bool = False
+    is_prototype: bool = False
     source_reference: str | None = Field(default=None, max_length=500)
+    verified: bool | None = Field(default=None, description="Deprecated; status follows the source reference")
 
 
 class SensitiveLocationIn(BaseModel):
@@ -305,17 +336,21 @@ class StaffCreate(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     phone: str | None = Field(default=None, max_length=32)
     role: Role
-    department_id: uuid.UUID | None = None
+    unit_id: uuid.UUID | None = Field(default=None, description="Department unit (department in a jurisdiction)")
+    department_id: uuid.UUID | None = Field(default=None, description="Used when the department has exactly one unit")
     designation: str | None = Field(default=None, max_length=120)
+    area_jurisdiction_ids: list[uuid.UUID] = []
 
 
 class UserPatch(BaseModel):
     full_name: str | None = Field(default=None, min_length=2, max_length=120)
     role: Role | None = None
     account_status: AccountStatus | None = None
+    unit_id: uuid.UUID | None = None
     department_id: uuid.UUID | None = None
     designation: str | None = Field(default=None, max_length=120)
     officer_active: bool | None = None
+    area_jurisdiction_ids: list[uuid.UUID] | None = None
     grant_permissions: list[Permission] = []
     revoke_permissions: list[Permission] = []
 

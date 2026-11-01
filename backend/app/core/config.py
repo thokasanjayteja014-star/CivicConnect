@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     MEDIA_LINK_TTL_SECONDS: int = 300
     FRONTEND_ORIGIN: str = "http://localhost:3000"
     BACKEND_BASE_URL: str = "http://localhost:8000"
+    # Separate demonstration environment (isolated "demo" schema with sample data)
+    DEMO_ENABLED: bool = True
+    DEMO_SCHEMA: str = Field(default="demo", pattern="^[a-z_][a-z0-9_]{0,30}$")
     LOG_LEVEL: str = "INFO"
     ENVIRONMENT: str = "development"
 

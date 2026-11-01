@@ -4,7 +4,7 @@ export default function NotFound() {
   return (
     <div className="py-20 text-center">
       <h1 className="text-xl font-semibold text-navy-900">Page not found</h1>
-      <Link href="/" className="mt-4 inline-block text-teal-700 underline">Back to home</Link>
+      <Link href="/" className="mt-4 inline-block text-navy-700 underline">Back to home</Link>
     </div>
   );
 }

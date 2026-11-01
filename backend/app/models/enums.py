@@ -155,3 +155,32 @@ class CitizenExposure(str, enum.Enum):
     STREET = "STREET"
     NEIGHBOURHOOD = "NEIGHBOURHOOD"
     WIDE_AREA = "WIDE_AREA"
+
+
+class VerificationStatus(str, enum.Enum):
+    """Administrative configuration status.
+
+    VERIFIED means a source reference was recorded by the administrator; it is not
+    independent government certification.
+    """
+    VERIFIED = "VERIFIED"
+    PENDING_VERIFICATION = "PENDING_VERIFICATION"
+    PROTOTYPE = "PROTOTYPE"
+
+
+class EscalationStatus(str, enum.Enum):
+    OPEN = "OPEN"
+    RESOLVED = "RESOLVED"
+
+
+class PublicIssueStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
+    VERIFIED = "VERIFIED"
+    PUBLISHED = "PUBLISHED"
+    UNPUBLISHED = "UNPUBLISHED"
+
+
+class PublicIssueProgress(str, enum.Enum):
+    REPORTED = "REPORTED"
+    IN_PROGRESS = "IN_PROGRESS"
+    RESOLVED = "RESOLVED"

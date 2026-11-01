@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app import audit
 from app.core.config import get_settings
+from app.core.environment import is_demo, storage_prefix
 from app.core.db import get_db
 from app.core.errors import err
 from app.core.ratelimit import rate_limit
@@ -35,7 +36,7 @@ async def upload(file: UploadFile = File(...), actor: Actor = Depends(require_ci
     until the citizen confirms a complaint referencing it."""
     data = await read_limited(file)
     v = validate_upload(data, file.content_type)
-    key = f"complaints/{actor.user_id}/{uuid.uuid4()}.{v.extension}"
+    key = f"{storage_prefix()}complaints/{actor.user_id}/{uuid.uuid4()}.{v.extension}"
     try:
         get_storage().put(key, v.data, v.mime_type)
     except StorageError:
@@ -57,7 +58,7 @@ def can_access_media(db: Session, actor: Actor | None, m: Media) -> bool:
     if m.complaint_id is None:
         return m.uploaded_by == actor.user_id
     complaint = db.get(Complaint, m.complaint_id)
-    if complaint is None or not can_view_complaint(actor, complaint):
+    if complaint is None or not can_view_complaint(actor, complaint, db):
         return False
     if m.purpose == MediaPurpose.RESOLUTION_EVIDENCE and not actor.is_staff:
         ev = db.scalar(select(ResolutionEvidence).where(ResolutionEvidence.media_id == m.id))
@@ -72,7 +73,8 @@ def media_link(media_id: uuid.UUID, actor: Actor | None = Depends(get_optional_a
     if m is None or not can_access_media(db, actor, m):
         raise err("MEDIA_NOT_AVAILABLE")
     token, exp = create_media_token(m.id, actor.user_id if actor else None)
-    return {"url": f"{get_settings().BACKEND_BASE_URL}/api/media/{m.id}?sig={token}", "expires_at": exp}
+    env_q = "&cc_env=demo" if is_demo() else ""
+    return {"url": f"{get_settings().BACKEND_BASE_URL}/api/media/{m.id}?sig={token}{env_q}", "expires_at": exp}
 
 
 @router.get("/{media_id}")

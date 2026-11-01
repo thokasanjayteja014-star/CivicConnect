@@ -27,7 +27,15 @@ from app.priority.engine import (
     level_for_score,
     validate_priority_config,
 )
-from app.routing.engine import DepartmentFact, JurisdictionFact, RoutingInput, RuleFact, determine_department
+from app.routing.engine import (
+    DepartmentFact,
+    LeafFact,
+    OfficerFact,
+    RoutingInput,
+    UnitFact,
+    choose_officer,
+    determine_routing,
+)
 from app.schemas import LocationIn
 from app.security.permissions import Actor, can_view_complaint, check_role_permissions, has_permission, in_department_scope
 from app.services.complaints import generate_complaint_reference, validate_complaint_input, validate_location
@@ -169,58 +177,82 @@ def test_lexical_similarity_bounds():
     assert lexical_similarity("water leak", "broken streetlight") == 0.0
 
 
-# 5. determine_department
+# 5. determine_routing (hierarchy + units + officers)
 D1, D2 = uuid.uuid4(), uuid.uuid4()
-J = uuid.uuid4()
+J, PARENT = uuid.uuid4(), uuid.uuid4()
+U1, U2 = uuid.uuid4(), uuid.uuid4()
+ROADS, WORKS = DepartmentFact(D1, "Roads", True), DepartmentFact(D2, "Works", True)
 
 
-def _inp(rules, depts=None, containing=True, configured=True, uncertain=False):
-    depts = depts if depts is not None else [DepartmentFact(D1, "Roads", True), DepartmentFact(D2, "Works", True)]
+def _inp(responsible, units=None, containing=True, configured=True, uncertain=False, officers=None):
+    units = units if units is not None else {D1: UnitFact(U1, D1, PARENT, "District", True),
+                                             D2: UnitFact(U2, D2, J, "Ward 1", True)}
+    leaf = LeafFact(J, "Ward 1", "District › Ward 1", {d.id: units.get(d.id) for d in responsible})
     return RoutingInput(category="ROAD_INFRASTRUCTURE", any_jurisdiction_configured=configured, location_uncertain=uncertain,
-                        accuracy_meters=None, containing=[JurisdictionFact(J, "Ward 1", True, depts)] if containing else [],
-                        rules=rules)
+                        accuracy_meters=None, leaves=[leaf] if containing else [], responsible=responsible,
+                        officers=officers or {})
 
 
-def test_routing_single_match():
-    r = determine_department(_inp([RuleFact(D1, True, True)]))
-    assert r.routing_status == RoutingStatus.ROUTED and r.department_id == D1 and r.jurisdiction_id == J
-    assert "Roads" in r.explanation
+def test_routing_single_match_uses_parent_unit():
+    r = determine_routing(_inp([ROADS]))
+    assert r.routing_status == RoutingStatus.ROUTED and r.department_id == D1 and r.unit_id == U1 and r.jurisdiction_id == J
+    assert "Roads" in r.explanation and r.officer_id is None
 
 
 def test_routing_multiple_matches_review():
-    r = determine_department(_inp([RuleFact(D1, True, True), RuleFact(D2, True, True)]))
+    r = determine_routing(_inp([ROADS, WORKS]))
     assert r.routing_status == RoutingStatus.PENDING_REVIEW and r.department_id is None
     assert r.reason_code == "MULTIPLE_DEPARTMENTS"
 
 
 def test_routing_outside_jurisdiction_review():
-    r = determine_department(_inp([RuleFact(D1, True, True)], containing=False))
+    r = determine_routing(_inp([ROADS], containing=False))
     assert r.routing_status == RoutingStatus.PENDING_REVIEW and r.reason_code == "OUTSIDE_JURISDICTION"
 
 
-def test_routing_unverified_rule_review():
-    r = determine_department(_inp([RuleFact(D1, True, False)]))
-    assert r.routing_status == RoutingStatus.PENDING_REVIEW and r.reason_code == "INCOMPLETE_CONFIGURATION"
+def test_routing_department_not_mapped_here():
+    r = determine_routing(_inp([ROADS], units={}))
+    assert r.routing_status == RoutingStatus.PENDING_REVIEW and r.reason_code == "DEPARTMENT_NOT_ACTIVE_HERE"
 
 
-def test_routing_no_rule_unrouted():
-    r = determine_department(_inp([]))
-    assert r.routing_status == RoutingStatus.UNROUTED and r.department_id is None
+def test_routing_inactive_unit_blocks():
+    r = determine_routing(_inp([ROADS], units={D1: UnitFact(U1, D1, PARENT, "District", False)}))
+    assert r.routing_status == RoutingStatus.PENDING_REVIEW and r.reason_code == "DEPARTMENT_NOT_ACTIVE_HERE"
 
 
-def test_routing_nothing_configured_unrouted():
-    r = determine_department(_inp([], containing=False, configured=False))
-    assert r.routing_status == RoutingStatus.UNROUTED
+def test_routing_no_responsibility_review():
+    r = determine_routing(_inp([]))
+    assert r.routing_status == RoutingStatus.PENDING_REVIEW and r.reason_code == "NO_RESPONSIBILITY"
+
+
+def test_routing_nothing_configured_review():
+    r = determine_routing(_inp([], containing=False, configured=False))
+    assert r.routing_status == RoutingStatus.PENDING_REVIEW and r.reason_code == "NO_JURISDICTION_CONFIGURED"
 
 
 def test_routing_uncertain_location_review():
-    r = determine_department(_inp([RuleFact(D1, True, True)], uncertain=True))
+    r = determine_routing(_inp([ROADS], uncertain=True))
     assert r.routing_status == RoutingStatus.PENDING_REVIEW and r.reason_code == "LOCATION_UNCERTAIN"
 
 
 def test_routing_inactive_department_not_routed():
-    r = determine_department(_inp([RuleFact(D1, True, True)], depts=[DepartmentFact(D1, "Roads", False)]))
+    r = determine_routing(_inp([DepartmentFact(D1, "Roads", False)]))
     assert r.routing_status == RoutingStatus.PENDING_REVIEW and r.department_id is None
+
+
+def test_routing_picks_officer_by_area_then_workload():
+    o_area, o_wide, o_busy = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    officers = {U1: [OfficerFact(o_wide, "Wide", 0, -1), OfficerFact(o_area, "Area", 3, 1), OfficerFact(o_busy, "Other area", 0, None)]}
+    r = determine_routing(_inp([ROADS], officers=officers))
+    assert r.officer_id == o_area and "operational area" in r.officer_reason
+
+
+def test_choose_officer_workload_tiebreak_and_none():
+    a, b = uuid.uuid4(), uuid.uuid4()
+    best, _ = choose_officer([OfficerFact(a, "A", 2, -1), OfficerFact(b, "B", 1, -1)])
+    assert best.id == b
+    none, reason = choose_officer([OfficerFact(a, "A", 0, None)])
+    assert none is None and "unassigned queue" in reason
 
 
 # 6. validate_status_transition
@@ -239,29 +271,36 @@ def test_forbidden_transitions(a, b):
 
 # 7. check_role_permissions
 class _C:
-    def __init__(self, citizen_id, department_id):
-        self.citizen_id, self.department_id = citizen_id, department_id
+    def __init__(self, citizen_id, unit_id, jurisdiction_id=None):
+        self.id = uuid.uuid4()
+        self.citizen_id, self.department_unit_id, self.jurisdiction_id = citizen_id, unit_id, jurisdiction_id
 
 
 def test_role_permissions():
-    dept_a, dept_b = uuid.uuid4(), uuid.uuid4()
+    unit_a, unit_b = uuid.uuid4(), uuid.uuid4()
     citizen = Actor(uuid.uuid4(), Role.CITIZEN, "c")
-    officer = Actor(uuid.uuid4(), Role.OFFICER, "o", department_id=dept_a, officer_active=True)
-    dadmin = Actor(uuid.uuid4(), Role.DEPARTMENT_ADMIN, "d", department_id=dept_a, officer_active=True)
+    officer = Actor(uuid.uuid4(), Role.OFFICER, "o", department_id=uuid.uuid4(), officer_active=True, unit_id=unit_a)
+    dadmin = Actor(uuid.uuid4(), Role.DEPARTMENT_ADMIN, "d", department_id=officer.department_id, officer_active=True, unit_id=unit_a)
     sysadmin = Actor(uuid.uuid4(), Role.SYSTEM_ADMIN, "s")
+    a, b = _C(uuid.uuid4(), unit_a), _C(uuid.uuid4(), unit_b)
 
     with pytest.raises(ApiError):
         check_role_permissions(citizen, {Role.OFFICER, Role.DEPARTMENT_ADMIN})
-    assert can_view_complaint(citizen, _C(citizen.user_id, dept_a))
-    assert not can_view_complaint(citizen, _C(uuid.uuid4(), dept_a))
-    assert in_department_scope(officer, dept_a) and not in_department_scope(officer, dept_b)
-    assert not can_view_complaint(officer, _C(uuid.uuid4(), dept_b))
-    assert not has_permission(officer, Permission.VERIFY_RESOLUTION, dept_a)
+    assert can_view_complaint(citizen, _C(citizen.user_id, unit_a))
+    assert not can_view_complaint(citizen, a)
+    assert in_department_scope(officer, a) and not in_department_scope(officer, b)
+    assert not can_view_complaint(officer, b)
+    assert not has_permission(officer, Permission.VERIFY_RESOLUTION, a)
     officer.explicit_permissions.add(Permission.VERIFY_RESOLUTION)
-    assert has_permission(officer, Permission.VERIFY_RESOLUTION, dept_a)
-    assert has_permission(dadmin, Permission.VERIFY_RESOLUTION, dept_a)
-    assert not has_permission(dadmin, Permission.VERIFY_RESOLUTION, dept_b)
-    assert has_permission(sysadmin, Permission.DECIDE_REOPENING, dept_b)
+    assert has_permission(officer, Permission.VERIFY_RESOLUTION, a)
+    assert has_permission(dadmin, Permission.VERIFY_RESOLUTION, a)
+    assert not has_permission(dadmin, Permission.VERIFY_RESOLUTION, b)
+    assert has_permission(sysadmin, Permission.DECIDE_REOPENING, b)
+    # operational areas narrow an officer's view inside the unit
+    ward1, ward2 = uuid.uuid4(), uuid.uuid4()
+    area_officer = Actor(uuid.uuid4(), Role.OFFICER, "w", officer_active=True, unit_id=unit_a, area_ids=frozenset({ward1}))
+    assert in_department_scope(area_officer, _C(uuid.uuid4(), unit_a, ward1))
+    assert not in_department_scope(area_officer, _C(uuid.uuid4(), unit_a, ward2))
     with pytest.raises(ApiError):
         check_role_permissions(dadmin, {Role.SYSTEM_ADMIN})
 

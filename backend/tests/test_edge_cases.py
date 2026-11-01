@@ -46,7 +46,7 @@ def test_notifications_and_misuse(client, configured):
     types = {i["notification_type"] for i in n["items"]}
     assert {"SUBMITTED", "ROUTED"} <= types and n["unread"] >= 2
     officer_n = client.get("/api/notifications", headers=auth(configured["officer_token"])).json()
-    assert any(i["notification_type"] == "NEW_DEPARTMENT_COMPLAINT" for i in officer_n["items"])
+    assert any(i["notification_type"] == "ASSIGNED_TO_YOU" for i in officer_n["items"])
     assert client.post("/api/notifications/read-all", headers=auth(token)).status_code == 200
     assert client.get("/api/notifications", headers=auth(token)).json()["unread"] == 0
 
@@ -64,10 +64,12 @@ def test_notifications_and_misuse(client, configured):
 
 def test_citizen_patch_only_before_review(client, configured):
     token, _ = register_citizen(client)
-    c = create_complaint(client, token)
+    c = create_complaint(client, token, category="STREETLIGHT")  # waits in review, stays SUBMITTED
     r = client.patch(f"/api/complaints/{c['complaint_id']}", json={"title": "Updated pothole title"}, headers=auth(token))
     assert r.status_code == 200 and r.json()["title"] == "Updated pothole title"
     assert r.json()["original_description"]  # original preserved
-    client.post(f"/api/authority/complaints/{c['complaint_id']}/status", json={"status": "UNDER_REVIEW"}, headers=auth(configured["officer_token"]))
+    client.post(f"/api/admin/complaints/{c['complaint_id']}/routing",
+                json={"department_id": configured["dept"]["id"], "reason": "Streetlights handled by roads here"},
+                headers=auth(configured["admin_token"]))
     r = client.patch(f"/api/complaints/{c['complaint_id']}", json={"title": "Another new title"}, headers=auth(token))
     assert r.status_code == 409

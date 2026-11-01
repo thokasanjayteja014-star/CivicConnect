@@ -29,7 +29,8 @@ def containing_jurisdictions(db: Session, lat: float, lng: float) -> list[Jurisd
 
 
 def any_active_jurisdiction(db: Session) -> bool:
-    return db.scalar(select(func.count()).select_from(Jurisdiction).where(Jurisdiction.active.is_(True))) > 0
+    return db.scalar(select(func.count()).select_from(Jurisdiction).where(
+        Jurisdiction.active.is_(True), Jurisdiction.boundary.is_not(None))) > 0
 
 
 def matching_sensitive_locations(db: Session, lat: float, lng: float) -> list[tuple[SensitiveLocation, float]]:

@@ -83,8 +83,10 @@ def register_citizen(client, email=None, name="Test Citizen"):
     return r.json()["access_token"], r.json()["user"]
 
 
-def make_user(db, role, department_id=None, designation="Officer", email=None):
-    from app.models import Officer, User
+def make_user(db, role, department_id=None, designation="Officer", email=None, unit_id=None, area_ids=None):
+    from sqlalchemy import select
+
+    from app.models import DepartmentUnit, Officer, OfficerArea, User
     from app.models.enums import AccountStatus
     from app.security import create_access_token, hash_password
 
@@ -93,9 +95,15 @@ def make_user(db, role, department_id=None, designation="Officer", email=None):
     db.add(u)
     db.flush()
     officer = None
-    if department_id:
-        officer = Officer(user_id=u.id, department_id=department_id, designation=designation)
+    if department_id or unit_id:
+        if unit_id is None:
+            unit_id = db.scalars(select(DepartmentUnit.id).where(DepartmentUnit.department_id == department_id)).first()
+        unit = db.get(DepartmentUnit, unit_id)
+        officer = Officer(user_id=u.id, department_id=unit.department_id, unit_id=unit.id, designation=designation)
         db.add(officer)
+        db.flush()
+        for a in area_ids or []:
+            db.add(OfficerArea(officer_id=officer.id, jurisdiction_id=a))
     db.commit()
     token, _ = create_access_token(u.id, role.value)
     return token, u, officer
@@ -123,19 +131,19 @@ def configured(client, admin, db):
     other = client.post("/api/admin/departments", json={"name": "Test Water Dept"}, headers=auth(at)).json()
     j = client.post("/api/admin/jurisdictions", json={"name": "Test Ward", "boundary": SQUARE,
                                                       "department_ids": [dept["id"], other["id"]]}, headers=auth(at))
-    assert j.status_code == 200, j.text
+    assert j.status_code == 201, j.text
     r = client.post("/api/admin/responsibilities", json={"department_id": dept["id"], "category": "ROAD_INFRASTRUCTURE",
-                                                         "verified": True}, headers=auth(at))
+                                                         "source_reference": "Test act s.1"}, headers=auth(at))
     assert r.status_code == 200, r.text
     r = client.post("/api/admin/responsibilities", json={"department_id": other["id"], "category": "WATER_SUPPLY",
-                                                         "verified": True}, headers=auth(at))
+                                                         "source_reference": "Test act s.2"}, headers=auth(at))
     did, oid = uuid.UUID(dept["id"]), uuid.UUID(other["id"])
     dadmin_token, dadmin, dadmin_officer = make_user(db, Role.DEPARTMENT_ADMIN, did, "Head")
     off_token, off, off_officer = make_user(db, Role.OFFICER, did, "Field officer")
     other_token, _, _ = make_user(db, Role.OFFICER, oid, "Water officer")
     return {"dept": dept, "other": other, "jurisdiction": j.json(), "admin_token": at,
             "dadmin_token": dadmin_token, "dadmin_officer": dadmin_officer, "officer_token": off_token,
-            "officer": off_officer, "other_officer_token": other_token}
+            "officer": off_officer, "officer_user": off, "other_officer_token": other_token}
 
 
 def complaint_payload(**over):

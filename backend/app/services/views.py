@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -16,6 +16,7 @@ from app.models import (
     ComplaintRelationship,
     ComplaintRemark,
     Department,
+    Escalation,
     Media,
     Officer,
     ResolutionEvidence,
@@ -37,6 +38,8 @@ from app.security.permissions import Actor
 from app.services.complaints import latest_priority, latest_routing_decision
 from app.services.lifecycle import allowed_targets
 from app.services.workflow import can_decide_reopening, can_verify
+from app.services.escalation import escalation_dict
+from app.services.hierarchy import jurisdiction_path
 
 ROLE_LABEL = {
     Role.CITIZEN: "Citizen",
@@ -87,6 +90,19 @@ def officer_out(db: Session, officer: Officer | None, include_name: bool) -> dic
     return out
 
 
+def _overdue(c: Complaint) -> bool:
+    from datetime import datetime, timezone
+    from app.services.escalation import OPEN_STATUSES
+    return bool(c.due_at and c.status in OPEN_STATUSES and c.due_at < datetime.now(timezone.utc))
+
+
+def _escalated(db: Session, c: Complaint) -> int:
+    from app.models import Escalation
+    from app.models.enums import EscalationStatus
+    return db.scalar(select(func.max(Escalation.level)).where(Escalation.complaint_id == c.id,
+                                                               Escalation.status == EscalationStatus.OPEN)) or 0
+
+
 def list_item(db: Session, c: Complaint, staff: bool) -> dict:
     a = active_assignment(db, c.id)
     return {
@@ -101,8 +117,11 @@ def list_item(db: Session, c: Complaint, staff: bool) -> dict:
         "needs_prompt_review": c.needs_prompt_review,
         "routing_status": c.routing_status,
         "department": dept_out(c.department),
+        "jurisdiction": ({"id": c.jurisdiction.id, "name": c.jurisdiction.name} if c.jurisdiction else None),
         "location": {"latitude": c.latitude, "longitude": c.longitude, "landmark": c.landmark, "address_text": c.address_text},
         "assigned_officer": officer_out(db, a.officer if a else None, include_name=staff) if a else None,
+        "assignment_accepted": bool(a and a.accepted_at),
+        **({"due_at": c.due_at, "overdue": _overdue(c), "escalated": _escalated(db, c)} if staff else {}),
         "version": c.version,
         "created_at": c.created_at,
         "updated_at": c.updated_at,
@@ -183,7 +202,8 @@ def complaint_detail(db: Session, actor: Actor, c: Complaint) -> dict:
 
     timeline = [
         {"type": "STATUS", "previous_status": h.previous_status, "new_status": h.new_status,
-         "actor_role": ROLE_LABEL[h.actor_role], "remarks": h.remarks, "created_at": h.created_at}
+         "actor_role": ROLE_LABEL[h.actor_role] if h.actor_role else "CivicConnect (automatic)", "remarks": h.remarks,
+         "created_at": h.created_at}
         for h in history
     ] + [
         {"type": r.kind, "visibility": r.visibility, "actor_role": ROLE_LABEL[r.author_role], "remarks": r.text,
@@ -234,14 +254,24 @@ def complaint_detail(db: Session, actor: Actor, c: Complaint) -> dict:
     }
     if staff:
         out["permitted_actions"] = permitted_actions(db, actor, c, a)
+        out["escalations"] = [escalation_dict(e) for e in db.scalars(
+            select(Escalation).where(Escalation.complaint_id == c.id).order_by(Escalation.created_at))]
+        out["jurisdiction_path"] = jurisdiction_path(db, c.jurisdiction_id)
+        out["due_at"] = c.due_at
+        out["overdue"] = _overdue(c)
+        out["unit"] = ({"id": c.department_unit.id, "department": c.department_unit.department.name,
+                        "jurisdiction": c.department_unit.jurisdiction.name} if c.department_unit else None)
         out["assignments"] = [
-            {"officer": officer_out(db, x.officer, True), "assigned_by": x.assigned_by, "reason": x.reason,
+            {"officer": officer_out(db, x.officer, True), "assigned_by": x.assigned_by,
+             "assigned_by_name": (db.get(User, x.assigned_by).full_name if x.assigned_by else "Routing engine (automatic)"),
+             "automatic": x.automatic, "reason": x.reason, "accepted_at": x.accepted_at,
              "assigned_at": x.assigned_at, "assignment_status": x.assignment_status}
             for x in db.scalars(select(Assignment).where(Assignment.complaint_id == c.id).order_by(Assignment.assigned_at))
         ]
         out["routing_history"] = [
             {"routing_status": r.routing_status, "reason_code": r.reason_code, "explanation": r.explanation,
-             "department_id": r.department_id, "rule_version": r.rule_version, "decided_at": r.decided_at,
+             "department_id": r.department_id, "unit_id": r.department_unit_id, "officer_id": r.officer_id,
+             "rule_version": r.rule_version, "decided_at": r.decided_at,
              "reviewed_by": r.reviewed_by}
             for r in db.scalars(select(RoutingDecision).where(RoutingDecision.complaint_id == c.id).order_by(RoutingDecision.decided_at))
         ]
@@ -260,8 +290,12 @@ def permitted_actions(db: Session, actor: Actor, c: Complaint, a: Assignment | N
     has_evidence = db.scalar(select(ResolutionEvidence.id).where(ResolutionEvidence.complaint_id == c.id).limit(1)) is not None
     return {
         "status_targets": [t.value for t in targets],
-        "can_assign": c.status in (S.UNDER_REVIEW, S.REOPENED),
-        "can_reassign": c.status in (S.ASSIGNED, S.IN_PROGRESS, S.ON_HOLD),
+        "can_assign": actor.role != Role.OFFICER and c.department_unit_id is not None
+        and c.status in (S.SUBMITTED, S.UNDER_REVIEW, S.REOPENED) and a is None,
+        "can_reassign": actor.role != Role.OFFICER and c.status in (S.ASSIGNED, S.IN_PROGRESS, S.ON_HOLD),
+        "can_accept": a is not None and a.officer_id == actor.officer_id and a.accepted_at is None,
+        "can_escalate": c.status in (S.SUBMITTED, S.UNDER_REVIEW, S.ASSIGNED, S.IN_PROGRESS, S.ON_HOLD, S.REOPENED)
+        and actor.role != Role.SYSTEM_ADMIN,
         "can_upload_evidence": c.status in (S.ASSIGNED, S.IN_PROGRESS, S.ON_HOLD, S.RESOLVED_AWAITING_VERIFICATION, S.REOPENED),
         "has_evidence": has_evidence,
         "can_verify": c.status == S.RESOLVED_AWAITING_VERIFICATION and can_verify(actor, c),
@@ -285,7 +319,7 @@ def related_view(db: Session, actor: Actor, c: Complaint) -> list[dict]:
                 "distance_m": r.distance_m, "text_similarity": r.text_similarity,
                 "text_similarity_method": r.text_similarity_method, "match_reasons": r.match_reasons,
                 "relationship_status": r.relationship_status, "reviewed_at": r.reviewed_at,
-                "in_scope": other.department_id == c.department_id,
+                "in_scope": other.department_unit_id == c.department_unit_id,
             })
         elif r.relationship_status == RelationshipStatus.CONFIRMED_RELATED and is_public(other):
             # Citizens see reviewed relationships, and only privacy-filtered public data.

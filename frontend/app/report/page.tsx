@@ -216,7 +216,7 @@ export default function ReportPage() {
               </div>
               <p className="text-sm text-slate-600">{result.routing_message}</p>
               <div className="flex gap-3 pt-3">
-                <Link href={`/complaints/${result.complaint_id}`} className="font-medium text-teal-700 underline">{t("Track this complaint")}</Link>
+                <Link href={`/complaints/${result.complaint_id}`} className="font-medium text-navy-700 underline">{t("Track this complaint")}</Link>
                 <Link href="/dashboard" className="text-slate-600 underline">{t("Back to dashboard")}</Link>
               </div>
             </div>
@@ -232,7 +232,7 @@ export default function ReportPage() {
       <ol className="flex flex-wrap gap-2 text-sm" aria-label={t("Progress")}>
         {stepNames.map((n, i) => (
           <li key={n} aria-current={step === i + 1 ? "step" : undefined}
-            className={cx("rounded-full px-3 py-1", step === i + 1 ? "bg-navy-700 text-white" : step > i + 1 ? "bg-teal-100 text-teal-800" : "bg-slate-200 text-slate-600")}>
+            className={cx("rounded px-3 py-1", step === i + 1 ? "bg-navy-700 text-white" : step > i + 1 ? "bg-navy-100 text-navy-800" : "bg-slate-200 text-slate-600")}>
             {i + 1}. {n}
           </li>
         ))}
@@ -241,7 +241,7 @@ export default function ReportPage() {
       {step === 1 && (
         <Card title={t("What is the problem?")}>
           <div className="space-y-5">
-            <p className="flex items-center gap-2 rounded-md bg-teal-50 px-3 py-2 text-xs text-teal-900">
+            <p className="flex items-center gap-2 rounded-md bg-navy-50 px-3 py-2 text-xs text-navy-900">
               <Languages className="h-4 w-4 shrink-0" aria-hidden />
               {t("You can write or speak in English, Hindi, Kannada or any language you are comfortable with.")}
             </p>
@@ -266,13 +266,13 @@ export default function ReportPage() {
                 onDrop={(e) => { e.preventDefault(); addFiles(e.dataTransfer.files); }}
                 className="mt-1 flex flex-col items-center rounded-md border-2 border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-600">
                 <FileUp className="h-6 w-6 text-slate-400" aria-hidden />
-                <p className="mt-2">{t("Drag files here or")} <button type="button" className="font-medium text-teal-700 underline" onClick={() => fileInput.current?.click()}>{t("choose files")}</button></p>
+                <p className="mt-2">{t("Drag files here or")} <button type="button" className="font-medium text-navy-700 underline" onClick={() => fileInput.current?.click()}>{t("choose files")}</button></p>
                 <p className="mt-1 text-xs">{t("Up to 5 images (JPEG/PNG/WEBP, 10 MB each) · 1 audio (MP3/WAV/M4A, 15 MB, 2 min) · 1 video (MP4, 50 MB, 1 min)")}</p>
                 <div className="mt-3"><VoiceRecorder onRecorded={(f) => addFiles([f])} disabled={uploads.some((u) => u.type === "AUDIO" && !u.error)} /></div>
                 <input ref={fileInput} type="file" multiple accept={ACCEPT} className="sr-only" onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
               </div>
               <p className="mt-1 text-xs text-slate-500">{imageCount}/5 {t("images")}</p>
-              {transcribeMsg && <p className="mt-1 text-xs text-teal-800" aria-live="polite">{transcribeMsg}</p>}
+              {transcribeMsg && <p className="mt-1 text-xs text-navy-800" aria-live="polite">{transcribeMsg}</p>}
               {uploads.length > 0 && (
                 <ul className="mt-3 space-y-2">
                   {uploads.map((u) => (
@@ -282,7 +282,7 @@ export default function ReportPage() {
                         <div className="truncate font-medium">{u.file.name}</div>
                         <div className="text-xs text-slate-500">{fmtBytes(u.file.size)}</div>
                         {u.error ? <div className="text-xs text-red-700">{u.error}</div> : !u.mediaId ? (
-                          <div className="mt-1 h-1.5 w-full rounded bg-slate-200"><div className="h-1.5 rounded bg-teal-500" style={{ width: `${u.progress}%` }} /></div>
+                          <div className="mt-1 h-1.5 w-full rounded bg-slate-200"><div className="h-1.5 rounded bg-navy-600" style={{ width: `${u.progress}%` }} /></div>
                         ) : <div className="text-xs text-green-700">{t("Uploaded and validated")}</div>}
                       </div>
                       {u.type === "AUDIO" && u.mediaId && (
@@ -313,7 +313,7 @@ export default function ReportPage() {
             <LocationPicker value={loc ? { lat: loc.lat, lng: loc.lng } : null} onChange={(lat, lng) => { setLoc({ lat, lng, accuracy: null, source: "MAP_SELECTION" }); fillAddress(lat, lng); }} />
             {loc ? (
               <p className="flex items-center gap-2 text-sm text-slate-700">
-                <MapPin className="h-4 w-4 text-teal-600" /> {loc.lat.toFixed(6)}, {loc.lng.toFixed(6)}
+                <MapPin className="h-4 w-4 text-navy-600" /> {loc.lat.toFixed(6)}, {loc.lng.toFixed(6)}
                 <Badge className="bg-slate-100 ring-slate-300">{loc.source === "GPS" ? `GPS · ±${loc.accuracy ?? "?"} m` : t("Selected on map")}</Badge>
               </p>
             ) : <p className="text-sm text-slate-500">{t("No location selected yet. We never guess a location for you.")}</p>}

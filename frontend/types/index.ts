@@ -24,10 +24,13 @@ export interface Me {
   notify_email: boolean;
   notify_sms: boolean;
   notify_push: boolean;
-  preferred_language: "en" | "hi" | "kn";
+  preferred_language: "en" | "hi" | "kn" | "te";
   department_id: string | null;
   department_name: string | null;
   officer_id: string | null;
+  unit_id: string | null;
+  jurisdiction_name: string | null;
+  environment: "production" | "demo";
   permissions: string[];
 }
 
@@ -45,6 +48,11 @@ export interface ComplaintListItem {
   department: { id: string; name: string; is_prototype: boolean } | null;
   location: { latitude: number; longitude: number; landmark?: string | null; address_text?: string | null };
   assigned_officer: { officer_id: string; designation: string; full_name?: string } | null;
+  assignment_accepted?: boolean;
+  jurisdiction?: { id: string; name: string } | null;
+  due_at?: string | null;
+  overdue?: boolean;
+  escalated?: number | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -95,9 +103,12 @@ export interface ComplaintDetail extends ComplaintListItem {
   workflow_notice: string;
   permitted_actions?: {
     status_targets: ComplaintStatus[]; can_assign: boolean; can_reassign: boolean; can_upload_evidence: boolean;
-    has_evidence: boolean; can_verify: boolean; can_decide_reopening: boolean;
+    has_evidence: boolean; can_verify: boolean; can_decide_reopening: boolean; can_accept?: boolean; can_escalate?: boolean;
   };
   assignments?: any[];
   routing_history?: any[];
   citizen_actions?: { can_edit: boolean; can_confirm_resolution: boolean; can_request_reopen: boolean };
+  escalations?: any[];
+  jurisdiction_path?: string | null;
+  unit?: { id: string; department: string; jurisdiction: string } | null;
 }

@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.environment import is_demo
 from app.models import Complaint, Notification, NotificationDelivery, Officer, PushSubscription, User
 from app.models.enums import ComplaintStatus, DeliveryStatus, Role
 from app.notifications import channels
@@ -66,7 +67,7 @@ def notify(
 @event.listens_for(Session, "after_commit")
 def _dispatch_after_commit(session: Session) -> None:
     ids = session.info.pop("pending_external_notifications", None)
-    if not ids:
+    if not ids or is_demo():  # the demonstration environment never contacts real people
         return
     st = channels.channel_status()
     if not (st["email"] or st["sms"] or st["push"]):
@@ -155,6 +156,18 @@ def department_staff_ids(db: Session, department_id: uuid.UUID, roles: set[Role]
         select(User.id, User.role)
         .join(Officer, Officer.user_id == User.id)
         .where(Officer.department_id == department_id, Officer.active.is_(True))
+    )
+    return [uid for uid, role in db.execute(stmt) if roles is None or role in roles]
+
+
+def unit_staff_ids(db: Session, unit_id: uuid.UUID | None, roles: set[Role] | None = None) -> list[uuid.UUID]:
+    """Active personnel of one department unit (department in a jurisdiction)."""
+    if not unit_id:
+        return []
+    stmt = (
+        select(User.id, User.role)
+        .join(Officer, Officer.user_id == User.id)
+        .where(Officer.unit_id == unit_id, Officer.active.is_(True))
     )
     return [uid for uid, role in db.execute(stmt) if roles is None or role in roles]
 

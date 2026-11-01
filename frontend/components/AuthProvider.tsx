@@ -2,12 +2,17 @@
 
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { api, clearSession, getSession, setSession } from "@/services/api";
+import { api, clearSession, getEnv, getSession, setEnv, setSession, type AppEnv } from "@/services/api";
 import type { Me, Role } from "@/types";
 
 type AuthCtx = {
   user: Me | null;
   ready: boolean;
+  env: AppEnv;
+  /** Enter the isolated demo environment signed in as the sample user of a role. */
+  demoLogin: (role: Role) => Promise<Me>;
+  /** Leave the demo environment (production session, if any, is untouched). */
+  exitDemo: () => Promise<void>;
   login: (email: string, password: string) => Promise<Me>;
   register: (full_name: string, email: string, password: string, phone?: string) => Promise<Me>;
   logout: () => Promise<void>;
@@ -25,6 +30,7 @@ export function homeFor(role: Role): string {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<Me | null>(null);
   const [ready, setReady] = useState(false);
+  const [env, setEnvState] = useState<AppEnv>("production");
 
   const refresh = useCallback(async () => {
     if (!getSession()) {
@@ -42,11 +48,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    setEnvState(getEnv());
     refresh();
     const onUnauth = () => setUser(null);
+    const onEnv = () => { setEnvState(getEnv()); refresh(); };
     window.addEventListener("cc:unauthenticated", onUnauth);
-    return () => window.removeEventListener("cc:unauthenticated", onUnauth);
+    window.addEventListener("cc:env", onEnv);
+    return () => { window.removeEventListener("cc:unauthenticated", onUnauth); window.removeEventListener("cc:env", onEnv); };
   }, [refresh]);
+
+  const demoLogin = async (role: Role) => {
+    if (getEnv() !== "demo") setEnv("demo");
+    const r = await api<{ access_token: string; expires_at: string }>("/api/demo/login", { body: { role } });
+    setSession(r.access_token, r.expires_at);
+    const me = await api<Me>("/api/auth/me");
+    setEnvState("demo");
+    setUser(me);
+    return me;
+  };
+
+  const exitDemo = async () => {
+    if (getEnv() === "demo") {
+      try { await api("/api/auth/logout", { method: "POST" }); } catch { /* ignore */ }
+      clearSession();
+      setEnv("production");
+    }
+  };
 
   const login = async (email: string, password: string) => {
     const r = await api<{ access_token: string; expires_at: string; user: Me }>("/api/auth/login", { body: { email, password } });
@@ -74,7 +101,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   };
 
-  return <Ctx.Provider value={{ user, ready, login, register, logout, refresh }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ user, ready, env, demoLogin, exitDemo, login, register, logout, refresh }}>{children}</Ctx.Provider>;
 }
 
 export function useAuth() {

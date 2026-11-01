@@ -27,6 +27,9 @@ class Actor:
     officer_id: uuid.UUID | None = None
     officer_active: bool = False
     explicit_permissions: set[Permission] = field(default_factory=set)
+    unit_id: uuid.UUID | None = None
+    # Officers only: operational-area jurisdictions expanded with descendants; empty = whole unit.
+    area_ids: frozenset = frozenset()
 
     @property
     def is_staff(self) -> bool:
@@ -46,28 +49,42 @@ def check_role_permissions(actor: Actor, allowed_roles: set[Role]) -> None:
         raise err("FORBIDDEN")
 
 
-def in_department_scope(actor: Actor, department_id: uuid.UUID | None) -> bool:
-    """System admins see every department; department users only their own active department."""
+def _assigned_to(db, actor: Actor, complaint) -> bool:
+    from sqlalchemy import select
+    from app.models import Assignment
+    return db is not None and actor.officer_id is not None and db.scalar(
+        select(Assignment.id).where(Assignment.complaint_id == complaint.id, Assignment.officer_id == actor.officer_id).limit(1)
+    ) is not None
+
+
+def in_department_scope(actor: Actor, complaint, db=None) -> bool:
+    """System admins see everything; department personnel only their own unit (department in a
+    jurisdiction). Officers with operational areas see unit complaints in those areas plus anything
+    assigned to them."""
     if actor.is_system_admin:
         return True
-    if actor.role in DEPARTMENT_ROLES:
-        return actor.officer_active and department_id is not None and actor.department_id == department_id
-    return False
+    if actor.role not in DEPARTMENT_ROLES or not actor.officer_active or complaint is None:
+        return False
+    if actor.unit_id is None or complaint.department_unit_id != actor.unit_id:
+        return _assigned_to(db, actor, complaint) if actor.role == Role.OFFICER else False
+    if actor.role == Role.OFFICER and actor.area_ids and complaint.jurisdiction_id not in actor.area_ids:
+        return _assigned_to(db, actor, complaint)
+    return True
 
 
-def can_view_complaint(actor: Actor, complaint) -> bool:
+def can_view_complaint(actor: Actor, complaint, db=None) -> bool:
     if actor.role == Role.CITIZEN:
         return complaint.citizen_id == actor.user_id
-    return in_department_scope(actor, complaint.department_id)
+    return in_department_scope(actor, complaint, db)
 
 
-def has_permission(actor: Actor, permission: Permission, department_id: uuid.UUID | None) -> bool:
+def has_permission(actor: Actor, permission: Permission, complaint, db=None) -> bool:
     granted = ROLE_DEFAULT_PERMISSIONS.get(actor.role, set()) | actor.explicit_permissions
     if permission not in granted:
         return False
-    return in_department_scope(actor, department_id)
+    return in_department_scope(actor, complaint, db)
 
 
-def require_permission(actor: Actor, permission: Permission, department_id: uuid.UUID | None) -> None:
-    if not has_permission(actor, permission, department_id):
+def require_permission(actor: Actor, permission: Permission, complaint, db=None) -> None:
+    if not has_permission(actor, permission, complaint, db):
         raise err("FORBIDDEN")

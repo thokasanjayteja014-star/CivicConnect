@@ -4,37 +4,45 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import get_settings
+from app.core.environment import DEMO, current_env
 
 
 class Base(DeclarativeBase):
     pass
 
 
-_engine = None
-_SessionLocal: sessionmaker | None = None
+# One engine per environment. The demo engine pins search_path to the isolated demo schema
+# (PostGIS functions stay reachable through public), so demo data can never be written to
+# or read from the production tables.
+_engines: dict = {}
+_makers: dict[str, sessionmaker] = {}
 
 
-def get_engine():
-    global _engine, _SessionLocal
-    if _engine is None:
-        _engine = create_engine(get_settings().DATABASE_URL, pool_pre_ping=True, future=True)
-        _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
-    return _engine
+def get_engine(env: str | None = None):
+    env = env or current_env()
+    if env not in _engines:
+        s = get_settings()
+        kwargs = {}
+        if env == DEMO:
+            kwargs["connect_args"] = {"options": f"-csearch_path={s.DEMO_SCHEMA},public"}
+        _engines[env] = create_engine(s.DATABASE_URL, pool_pre_ping=True, future=True, **kwargs)
+        _makers[env] = sessionmaker(bind=_engines[env], autoflush=False, expire_on_commit=False)
+    return _engines[env]
 
 
-def reset_engine() -> None:
-    """Used by tests after changing DATABASE_URL."""
-    global _engine, _SessionLocal
-    if _engine is not None:
-        _engine.dispose()
-    _engine = None
-    _SessionLocal = None
+def reset_engine(env: str | None = None) -> None:
+    """Dispose pooled connections (tests after changing DATABASE_URL; demo reset)."""
+    for key in ([env] if env else list(_engines)):
+        eng = _engines.pop(key, None)
+        _makers.pop(key, None)
+        if eng is not None:
+            eng.dispose()
 
 
-def SessionLocal() -> Session:
-    get_engine()
-    assert _SessionLocal is not None
-    return _SessionLocal()
+def SessionLocal(env: str | None = None) -> Session:
+    env = env or current_env()
+    get_engine(env)
+    return _makers[env]()
 
 
 def get_db() -> Iterator[Session]:

@@ -22,7 +22,6 @@ from app.duplicate_detection import CandidateInput, cosine, detect_duplicate_can
 from app.geospatial import (
     any_active_jurisdiction,
     any_sensitive_location,
-    containing_jurisdictions,
     make_point,
     matching_sensitive_locations,
     point_wkt,
@@ -31,31 +30,41 @@ from app.models import (
     AIAnalysis,
     Complaint,
     ComplaintRelationship,
+    Assignment,
     Department,
+    DepartmentUnit,
+    Jurisdiction,
     Media,
+    Officer,
+    OfficerArea,
     PriorityAssessment,
     PriorityConfig,
     ResponsibilityRule,
     RoutingDecision,
     StatusHistory,
+    User,
 )
 from app.models.enums import (
+    AccountStatus,
+    AssignmentStatus,
     ComplaintStatus,
     MediaPurpose,
     RelationshipStatus,
     Role,
     RoutingStatus,
 )
-from app.notifications import department_staff_ids, notify
+from app.notifications import notify, unit_staff_ids
 from app.priority.engine import DEFAULT_PRIORITY_CONFIG, FactorValue, assess_priority, validate_priority_config
 from app.routing.engine import (
     DepartmentFact,
-    JurisdictionFact,
+    LeafFact,
+    OfficerFact,
     RoutingInput,
     RoutingResult,
-    RuleFact,
-    determine_department,
+    UnitFact,
+    determine_routing,
 )
+from app.services import hierarchy
 from app.schemas import ComplaintCreate, LocationIn
 from app.security.permissions import Actor, can_view_complaint
 from app.services.media import check_media_counts
@@ -99,7 +108,7 @@ def get_visible_complaint(db: Session, actor: Actor, complaint_id: uuid.UUID, lo
     if lock:
         stmt = stmt.with_for_update()
     complaint = db.scalar(stmt)
-    if complaint is None or not can_view_complaint(actor, complaint):
+    if complaint is None or not can_view_complaint(actor, complaint, db):
         raise err("COMPLAINT_NOT_FOUND")  # E24: do not reveal existence
     return complaint
 
@@ -194,25 +203,62 @@ def run_priority(
 
 
 # ---------------- routing ----------------
+def _officer_facts(db: Session, unit: DepartmentUnit, chain: list[uuid.UUID], depths: dict) -> list[OfficerFact]:
+    rows = db.execute(
+        select(Officer, User.full_name)
+        .join(User, User.id == Officer.user_id)
+        .where(Officer.unit_id == unit.id, Officer.active.is_(True), User.role == Role.OFFICER,
+               User.account_status == AccountStatus.ACTIVE)
+    ).all()
+    if not rows:
+        return []
+    ids = [o.id for o, _ in rows]
+    workload = dict(db.execute(select(Assignment.officer_id, func.count()).where(
+        Assignment.officer_id.in_(ids), Assignment.assignment_status == AssignmentStatus.ACTIVE).group_by(Assignment.officer_id)).all())
+    areas: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for a in db.scalars(select(OfficerArea).where(OfficerArea.officer_id.in_(ids))):
+        areas.setdefault(a.officer_id, []).append(a.jurisdiction_id)
+    chain_set = set(chain)
+    out = []
+    for o, name in rows:
+        mine = areas.get(o.id, [])
+        if not mine:
+            match = -1
+        else:
+            covering = [depths.get(j, 0) for j in mine if j in chain_set]
+            match = max(covering) if covering else None
+        out.append(OfficerFact(o.id, name, int(workload.get(o.id, 0)), match))
+    return out
+
+
 def gather_routing_input(db: Session, complaint: Complaint) -> RoutingInput:
     s = get_settings()
-    juris = containing_jurisdictions(db, complaint.latitude, complaint.longitude)
-    rules = db.scalars(select(ResponsibilityRule).where(ResponsibilityRule.category == complaint.category)).all()
+    rules = db.scalars(select(ResponsibilityRule).where(
+        ResponsibilityRule.category == complaint.category, ResponsibilityRule.active.is_(True))).all()
+    responsible = {r.department_id: r.department for r in rules}
+    leaves_db = hierarchy.containing_leaf_jurisdictions(db, complaint.latitude, complaint.longitude)
+    depths = hierarchy.depth_map(db) if leaves_db else {}
+    leaves, officers = [], {}
+    for leaf in leaves_db:
+        chain = hierarchy.ancestor_ids(db, leaf.id)
+        fact = LeafFact(leaf.id, leaf.name, hierarchy.jurisdiction_path(db, leaf.id) or leaf.name)
+        for dept_id in responsible:
+            unit = hierarchy.nearest_unit(db, dept_id, chain)
+            if unit is None:
+                fact.units[dept_id] = None
+                continue
+            fact.units[dept_id] = UnitFact(unit.id, dept_id, unit.jurisdiction_id, unit.jurisdiction.name, unit.active)
+            if unit.active and unit.id not in officers:
+                officers[unit.id] = _officer_facts(db, unit, chain, depths)
+        leaves.append(fact)
     return RoutingInput(
         category=complaint.category.value,
         any_jurisdiction_configured=any_active_jurisdiction(db),
         location_uncertain=complaint.accuracy_meters is not None and complaint.accuracy_meters > s.ROUTING_MAX_LOCATION_ACCURACY_M,
         accuracy_meters=complaint.accuracy_meters,
-        containing=[
-            JurisdictionFact(
-                id=j.id,
-                name=j.name,
-                is_prototype=j.is_prototype,
-                departments=[DepartmentFact(d.id, d.name, d.active) for d in j.departments],
-            )
-            for j in juris
-        ],
-        rules=[RuleFact(r.department_id, r.active, r.verified) for r in rules],
+        leaves=leaves,
+        responsible=[DepartmentFact(d.id, d.name, d.active) for d in sorted(responsible.values(), key=lambda d: d.name)],
+        officers=officers,
     )
 
 
@@ -222,23 +268,30 @@ def apply_routing(
     result: RoutingResult,
     actor_id: uuid.UUID | None,
     reviewed_by: uuid.UUID | None = None,
+    auto_assign: bool = True,
 ) -> RoutingDecision:
+    from app.services import escalation, workflow  # local import: workflow imports this module
+
     decision = RoutingDecision(
         complaint_id=complaint.id,
         department_id=result.department_id,
+        department_unit_id=result.unit_id,
         jurisdiction_id=result.jurisdiction_id,
+        officer_id=result.officer_id if auto_assign else None,
         routing_status=result.routing_status,
         reason_code=result.reason_code,
         rule_version=get_settings().ROUTING_RULE_VERSION,
-        explanation=result.explanation,
+        explanation=result.explanation + (f" {result.officer_reason}" if result.officer_reason and auto_assign else ""),
         candidates=result.candidates,
         reviewed_by=reviewed_by,
     )
     db.add(decision)
     db.flush()
-    previous_department = complaint.department_id
+    previous_unit = complaint.department_unit_id
+    routed = result.routing_status == RoutingStatus.ROUTED
     complaint.routing_status = result.routing_status
-    complaint.department_id = result.department_id if result.routing_status == RoutingStatus.ROUTED else None
+    complaint.department_id = result.department_id if routed else None
+    complaint.department_unit_id = result.unit_id if routed else None
     if result.jurisdiction_id:
         complaint.jurisdiction_id = result.jurisdiction_id
     audit.record(
@@ -252,12 +305,15 @@ def apply_routing(
             "routing_status": result.routing_status,
             "reason_code": result.reason_code,
             "department_id": result.department_id,
+            "unit_id": result.unit_id,
             "jurisdiction_id": result.jurisdiction_id,
+            "officer_id": result.officer_id if auto_assign else None,
             "rule_version": decision.rule_version,
             "reviewed_by": reviewed_by,
         },
     )
-    if complaint.routing_status == RoutingStatus.ROUTED and complaint.department_id != previous_department:
+    if routed and complaint.department_unit_id != previous_unit:
+        escalation.set_due_at(db, complaint)
         dept = db.get(Department, complaint.department_id)
         notify(
             db,
@@ -267,20 +323,24 @@ def apply_routing(
             message=f"Your complaint {complaint.reference_id} was routed to {dept.name}.",
             event_key=f"routing:{decision.id}",
         )
-        for uid in department_staff_ids(db, complaint.department_id):
-            notify(
-                db,
-                recipient_id=uid,
-                complaint_id=complaint.id,
-                notification_type="NEW_DEPARTMENT_COMPLAINT",
-                message=f"New complaint {complaint.reference_id} ({complaint.category.value}) was routed to your department.",
-                event_key=f"routing:{decision.id}",
-            )
+        assigned = False
+        if auto_assign and result.officer_id:
+            assigned = workflow.auto_assign(db, complaint, result.officer_id, result.officer_reason)
+        if not assigned:
+            for uid in unit_staff_ids(db, complaint.department_unit_id, {Role.DEPARTMENT_ADMIN}):
+                notify(
+                    db,
+                    recipient_id=uid,
+                    complaint_id=complaint.id,
+                    notification_type="AWAITING_ASSIGNMENT",
+                    message=f"New complaint {complaint.reference_id} ({complaint.category.value}) is waiting for an officer to be assigned.",
+                    event_key=f"routing:{decision.id}",
+                )
     return decision
 
 
 def run_routing(db: Session, complaint: Complaint, actor_id: uuid.UUID | None = None) -> RoutingResult:
-    result = determine_department(gather_routing_input(db, complaint))
+    result = determine_routing(gather_routing_input(db, complaint))
     apply_routing(db, complaint, result, actor_id)
     return result
 

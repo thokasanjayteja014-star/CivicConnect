@@ -23,7 +23,7 @@ function RegisterForm() {
       <h1 className="text-2xl font-semibold text-navy-900">{t("Create a citizen account")}</h1>
       <p className="mt-1 text-sm text-slate-600">{t("Your name and contact details are private and never shown publicly.")}</p>
       <form
-        className="mt-6 space-y-4 rounded-lg border border-slate-200 bg-white p-6"
+        className="mt-6 space-y-4 rounded-md border border-slate-200 bg-white p-6"
         onSubmit={async (e) => {
           e.preventDefault();
           if (mismatch) return;
@@ -56,7 +56,7 @@ function RegisterForm() {
           <input id="confirm" type="password" required autoComplete="new-password" className={inputCls} value={form.confirm} onChange={set("confirm")} />
         </Field>
         <Button type="submit" loading={busy} disabled={mismatch} className="w-full">{t("Create account")}</Button>
-        <p className="text-center text-sm text-slate-600">{t("Already registered?")} <Link href="/login" className="font-medium text-teal-700 underline">{t("Log in")}</Link></p>
+        <p className="text-center text-sm text-slate-600">{t("Already registered?")} <Link href="/login" className="font-medium text-navy-700 underline">{t("Log in")}</Link></p>
       </form>
     </div>
   );

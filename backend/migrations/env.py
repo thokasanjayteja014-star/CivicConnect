@@ -1,6 +1,6 @@
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
+from sqlalchemy import engine_from_config, text
 from sqlalchemy import pool
 
 from alembic import context
@@ -79,13 +79,25 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
 
+    # Optional isolated schema (the demo environment): `alembic -x schema=demo upgrade head`
+    # or config.attributes["schema"] when run programmatically.
+    schema = config.attributes.get("schema") or context.get_x_argument(as_dictionary=True).get("schema")
     with connectable.connect() as connection:
+        extra = {}
+        if schema:
+            if not schema.replace("_", "").isalnum():
+                raise ValueError("invalid schema name")
+            connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+            connection.execute(text(f'SET search_path TO "{schema}", public'))
+            connection.commit()
+            extra = {"version_table_schema": schema}
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
             include_object=include_object,
             process_revision_directives=alembic_helpers.writer,
             render_item=alembic_helpers.render_item,
+            **extra,
         )
 
         with context.begin_transaction():

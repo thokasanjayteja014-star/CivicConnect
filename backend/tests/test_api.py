@@ -121,7 +121,7 @@ def test_create_complaint_with_photo_manual_mode(client, configured, db):
     assert up.status_code == 201
     mid = up.json()["media_id"]
     created = create_complaint(client, token, media_ids=[mid], original_description="pothole near bus stop, very deep!!")
-    assert created["status"] == "SUBMITTED" and created["reference_id"].startswith("CVC-")
+    assert created["status"] == "ASSIGNED" and created["reference_id"].startswith("CVC-")  # auto-assigned to area officer
     assert created["routing_status"] == "ROUTED" and created["department"]["name"] == "Test Roads Dept"
     assert created["priority_assessment_status"] in ("PROVISIONAL", "UNAVAILABLE") and created["priority_score"] is None
 
@@ -134,7 +134,7 @@ def test_create_complaint_with_photo_manual_mode(client, configured, db):
     assert d["original_description"] == "pothole near bus stop, very deep!!"
     assert d["media"][0]["media_id"] == mid and "storage_key" not in str(d)
     assert d["timeline"][0]["new_status"] == "SUBMITTED"
-    assert db.scalar(select(func.count()).select_from(StatusHistory)) == 1
+    assert db.scalar(select(func.count()).select_from(StatusHistory)) == 3  # SUBMITTED, UNDER_REVIEW, ASSIGNED (automatic)
 
     # media retrievable by owner, not by another citizen
     assert client.get(f"/api/media/{mid}", headers=auth(t2)).status_code == 200
@@ -203,32 +203,52 @@ def test_routing_outcomes(client, configured, db):
     at = configured["admin_token"]
     routed = create_complaint(client, token)
     c = db.get(Complaint, uuid.UUID(routed["complaint_id"]))
-    assert c.routing_status.value == "ROUTED" and c.status.value == "SUBMITTED"  # AC13: lifecycle unchanged
+    assert c.routing_status.value == "ROUTED" and c.status.value == "ASSIGNED"
+    assert str(c.department_unit_id) == configured["dept"]["units"][0]["id"] if configured["dept"].get("units") else True
     from app.models import Assignment
-    assert db.scalar(select(func.count()).select_from(Assignment)) == 0       # AC13: no officer auto-assigned
+    a = db.scalar(select(Assignment))
+    assert a.officer_id == configured["officer"].id and a.automatic and a.assigned_by is None and c.due_at is not None
+    hist = client.get(f"/api/complaints/{c.id}/history", headers=auth(token)).json()
+    assert [h["new_status"] for h in hist] == ["SUBMITTED", "UNDER_REVIEW", "ASSIGNED"]
 
     outside = create_complaint(client, token, location=OUTSIDE)
     assert outside["routing_status"] == "PENDING_REVIEW" and outside["department"] is None
-    assert "verified jurisdiction" in outside["routing_message"]
+    assert "configured jurisdiction" in outside["routing_message"]
 
     unrouted = create_complaint(client, token, category="STREETLIGHT")
-    assert unrouted["routing_status"] == "UNROUTED" and unrouted["department"] is None
+    assert unrouted["routing_status"] == "PENDING_REVIEW" and unrouted["department"] is None
 
     # second department becomes responsible for roads -> ambiguous
     client.post("/api/admin/responsibilities", json={"department_id": configured["other"]["id"], "category": "ROAD_INFRASTRUCTURE",
-                                                     "verified": True}, headers=auth(at))
+                                                     "source_reference": "Test"}, headers=auth(at))
     amb = create_complaint(client, token)
     assert amb["routing_status"] == "PENDING_REVIEW" and "Multiple departments" in amb["routing_message"]
     queue = client.get("/api/admin/routing-queue", headers=auth(at)).json()
-    refs = {q["reference_id"] for q in queue}
-    assert amb["reference_id"] in refs and outside["reference_id"] in refs and unrouted["reference_id"] not in refs
-    assert unrouted["reference_id"] in {q["reference_id"] for q in client.get("/api/admin/routing-queue?status=UNROUTED", headers=auth(at)).json()}
+    refs = {q["reference_id"]: q for q in queue}
+    assert {amb["reference_id"], outside["reference_id"], unrouted["reference_id"]} <= set(refs)
+    assert refs[unrouted["reference_id"]]["reason_code"] == "NO_RESPONSIBILITY"
 
-    # admin resolves ambiguity
+    # admin resolves ambiguity; routing then assigns the area officer automatically
     r = client.post(f"/api/admin/complaints/{amb['complaint_id']}/routing",
                     json={"department_id": configured["dept"]["id"], "reason": "Road is municipal"}, headers=auth(at))
-    assert r.status_code == 200 and r.json()["routing_status"] == "ROUTED"
+    assert r.status_code == 200 and r.json()["routing_status"] == "ROUTED", r.text
+    assert db.get(Complaint, uuid.UUID(amb["complaint_id"])).status.value == "ASSIGNED"
     assert db.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.action == "ROUTING_DECISION")) >= 5
+
+
+def test_no_officer_goes_to_unassigned_queue(client, configured, db):
+    from app.models import Officer
+    db.get(Officer, configured["officer"].id).active = False
+    db.commit()
+    token, _ = register_citizen(client)
+    c = create_complaint(client, token)
+    assert c["routing_status"] == "ROUTED" and c["status"] == "SUBMITTED"
+    dt = configured["dadmin_token"]
+    q = client.get("/api/authority/complaints?assignment=unassigned", headers=auth(dt)).json()
+    assert q["total"] == 1
+    n = client.get("/api/notifications", headers=auth(dt)).json()
+    assert any(i["notification_type"] == "AWAITING_ASSIGNMENT" for i in n["items"])
+    assert client.get("/api/authority/dashboard", headers=auth(dt)).json()["awaiting_assignment"] == 1
 
 
 def test_uncertain_gps_goes_to_review(client, configured):
@@ -263,9 +283,7 @@ def test_duplicate_detection(client, configured, db):
 # ---------- AC15-AC18, AC26, S5 ----------
 def _to_in_progress(client, cfg, cid):
     ot = cfg["officer_token"]
-    r = client.post(f"/api/authority/complaints/{cid}/status", json={"status": "UNDER_REVIEW"}, headers=auth(ot))
-    assert r.status_code == 200, r.text
-    r = client.post(f"/api/authority/complaints/{cid}/assign", json={"officer_id": str(cfg["officer"].id)}, headers=auth(ot))
+    r = client.post(f"/api/authority/complaints/{cid}/accept", headers=auth(ot))
     assert r.status_code == 200 and r.json()["status"] == "ASSIGNED", r.text
     r = client.post(f"/api/authority/complaints/{cid}/status", json={"status": "IN_PROGRESS", "remarks": "Crew dispatched"}, headers=auth(ot))
     assert r.status_code == 200, r.text
@@ -275,43 +293,48 @@ def test_full_department_workflow(client, configured, db):
     token, _ = register_citizen(client)
     c = create_complaint(client, token)
     cid = c["complaint_id"]
-    ot = configured["officer_token"]
+    ot, dt = configured["officer_token"], configured["dadmin_token"]
+    assert c["status"] == "ASSIGNED"
 
     # AC16 invalid transitions
     r = client.post(f"/api/authority/complaints/{cid}/status", json={"status": "VERIFIED_RESOLVED"}, headers=auth(ot))
     assert r.status_code == 409 and r.json()["error_code"] == "INVALID_STATUS_TRANSITION"
-    r = client.post(f"/api/authority/complaints/{cid}/status", json={"status": "IN_PROGRESS"}, headers=auth(ot))
+    r = client.post(f"/api/authority/complaints/{cid}/status", json={"status": "UNDER_REVIEW"}, headers=auth(ot))
     assert r.status_code == 409
-    assert db.get(Complaint, uuid.UUID(cid)).status.value == "SUBMITTED"
+    assert db.get(Complaint, uuid.UUID(cid)).status.value == "ASSIGNED"
 
     # AC17 isolation: other department cannot see or act
-    r = client.post(f"/api/authority/complaints/{cid}/status", json={"status": "UNDER_REVIEW"}, headers=auth(configured["other_officer_token"]))
+    r = client.post(f"/api/authority/complaints/{cid}/status", json={"status": "IN_PROGRESS"}, headers=auth(configured["other_officer_token"]))
     assert r.status_code == 404
     assert client.get("/api/authority/complaints", headers=auth(configured["other_officer_token"])).json()["total"] == 0
     assert client.get("/api/authority/complaints", headers=auth(ot)).json()["total"] == 1
 
     # citizen cannot use authority endpoints
-    assert client.post(f"/api/authority/complaints/{cid}/status", json={"status": "UNDER_REVIEW"}, headers=auth(token)).status_code == 403
+    assert client.post(f"/api/authority/complaints/{cid}/status", json={"status": "IN_PROGRESS"}, headers=auth(token)).status_code == 403
 
-    # E29 repeated update
-    assert client.post(f"/api/authority/complaints/{cid}/status", json={"status": "UNDER_REVIEW"}, headers=auth(ot)).status_code == 200
-    r = client.post(f"/api/authority/complaints/{cid}/status", json={"status": "UNDER_REVIEW"}, headers=auth(ot))
-    assert r.status_code == 409 and r.json()["error_code"] == "ALREADY_UPDATED"
+    # officers accept but cannot (re)assign; only the department administrator assigns
+    assert client.post(f"/api/authority/complaints/{cid}/accept", headers=auth(ot)).status_code == 200
+    assert client.post(f"/api/authority/complaints/{cid}/accept", headers=auth(ot)).json()["error_code"] == "ALREADY_UPDATED"
+    from app.models.enums import Role
+    _, _, second = make_user(db, Role.OFFICER, uuid.UUID(configured["dept"]["id"]), "Senior engineer")
+    r = client.post(f"/api/authority/complaints/{cid}/assign", json={"officer_id": str(second.id), "reason": "x" * 6}, headers=auth(ot))
+    assert r.status_code == 403
 
     # E26 ineligible officer (other department)
-    from app.models.enums import Role
     _, _, foreign_officer = make_user(db, Role.OFFICER, uuid.UUID(configured["other"]["id"]))
-    r = client.post(f"/api/authority/complaints/{cid}/assign", json={"officer_id": str(foreign_officer.id)}, headers=auth(ot))
+    r = client.post(f"/api/authority/complaints/{cid}/assign", json={"officer_id": str(foreign_officer.id), "reason": "wrong"}, headers=auth(dt))
     assert r.status_code == 422 and r.json()["error_code"] == "INVALID_ASSIGNMENT"
-
-    r = client.post(f"/api/authority/complaints/{cid}/assign", json={"officer_id": str(configured["officer"].id)}, headers=auth(ot))
-    assert r.status_code == 200
     # reassignment needs reason (E28)
-    r = client.post(f"/api/authority/complaints/{cid}/assign", json={"officer_id": str(configured["dadmin_officer"].id)}, headers=auth(ot))
+    r = client.post(f"/api/authority/complaints/{cid}/assign", json={"officer_id": str(second.id)}, headers=auth(dt))
     assert r.status_code == 422 and r.json()["error_code"] == "REASON_REQUIRED"
-    r = client.post(f"/api/authority/complaints/{cid}/assign", json={"officer_id": str(configured["dadmin_officer"].id),
-                                                                     "reason": "Senior engineer needed"}, headers=auth(ot))
+    r = client.post(f"/api/authority/complaints/{cid}/assign", json={"officer_id": str(second.id),
+                                                                     "reason": "Senior engineer needed"}, headers=auth(dt))
     assert r.status_code == 200
+    r = client.post(f"/api/authority/complaints/{cid}/assign", json={"officer_id": str(configured["officer"].id),
+                                                                     "reason": "Back to the area officer"}, headers=auth(dt))
+    assert r.status_code == 200
+    hist = client.get(f"/api/authority/complaints/{cid}", headers=auth(dt)).json()["assignments"]
+    assert len(hist) == 3
 
     # ON_HOLD requires reason
     client.post(f"/api/authority/complaints/{cid}/status", json={"status": "IN_PROGRESS"}, headers=auth(ot))
@@ -364,7 +387,7 @@ def test_full_department_workflow(client, configured, db):
 def test_optimistic_concurrency(client, configured):
     token, _ = register_citizen(client)
     c = create_complaint(client, token)
-    r = client.post(f"/api/authority/complaints/{c['complaint_id']}/status", json={"status": "UNDER_REVIEW", "expected_version": 99},
+    r = client.post(f"/api/authority/complaints/{c['complaint_id']}/status", json={"status": "IN_PROGRESS", "expected_version": 99},
                     headers=auth(configured["officer_token"]))
     assert r.status_code == 409 and r.json()["error_code"] == "CONCURRENT_UPDATE"
 
@@ -437,8 +460,8 @@ def test_reopen_accept_and_reject(client, configured, db):
                        headers=auth(configured["dadmin_token"])).status_code == 409
     # back into review workflow
     r = client.post(f"/api/authority/complaints/{cid}/assign", json={"officer_id": str(configured["officer"].id)},
-                    headers=auth(configured["officer_token"]))
-    assert r.status_code == 200 and r.json()["status"] == "ASSIGNED"
+                    headers=auth(configured["dadmin_token"]))
+    assert r.status_code == 200 and r.json()["status"] == "ASSIGNED", r.text
     assert {"REOPEN_REVIEW_DECISION"} <= set(db.scalars(select(AuditLog.action).where(AuditLog.entity_id == cid)))
 
 
@@ -475,11 +498,10 @@ def test_public_privacy_and_real_statistics(client, configured, db):
     assert stats["trend_weekly"] is None and stats["trend_note"]
     # authority dashboard counts match records
     dash = client.get("/api/authority/dashboard", headers=auth(ot)).json()
-    assert dash["total"] == 3 and dash["awaiting_review"] == 3
+    assert dash["total"] == 3 and dash["assigned"] == 3 and dash["assigned_to_me"] == 3
     summary = client.get("/api/complaints/summary", headers=auth(token)).json()
-    assert summary["total"] == 3 and summary["under_review"] == 3
+    assert summary["total"] == 3 and summary["in_progress"] == 3
     # rejected complaints are not public
-    client.post(f"/api/authority/complaints/{ids[1]}/status", json={"status": "UNDER_REVIEW"}, headers=auth(ot))
     client.post(f"/api/authority/complaints/{ids[1]}/status", json={"status": "REJECTED", "reason": "Not a civic issue"}, headers=auth(ot))
     assert client.get("/api/public/complaints").json()["total"] == 1
 

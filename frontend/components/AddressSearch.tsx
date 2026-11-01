@@ -45,7 +45,7 @@ export function AddressSearch({ onPick }: { onPick: (p: Place) => void }) {
         <ul className="divide-y divide-slate-100 rounded-md border border-slate-200 bg-white text-sm">
           {results.map((p) => (
             <li key={`${p.latitude},${p.longitude}`}>
-              <button type="button" className="w-full px-3 py-2 text-left hover:bg-teal-50"
+              <button type="button" className="w-full px-3 py-2 text-left hover:bg-navy-50"
                 onClick={() => { onPick(p); setResults(null); }}>{p.display_name}</button>
             </li>
           ))}

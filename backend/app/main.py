@@ -8,9 +8,11 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api import admin, auth, authority, complaints, geo, media, misc, public
+from app import demo
+from app.api import admin, admin_config, auth, governance, authority, complaints, geo, media, misc, public
 from app.audit import request_id_var
 from app.core.config import get_settings
+from app.core.environment import EnvironmentMiddleware
 from app.core.errors import ApiError, err
 
 log = logging.getLogger("civicconnect")
@@ -34,8 +36,8 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=[o.strip() for o in settings.FRONTEND_ORIGIN.split(",") if o.strip()],
         allow_credentials=False,
-        allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"],
+        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID", "X-CC-Env"],
         expose_headers=["X-Request-ID"],
     )
 
@@ -53,6 +55,9 @@ def create_app() -> FastAPI:
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         return response
+
+    # Outermost: selects production or the isolated demo environment for the whole request.
+    app.add_middleware(EnvironmentMiddleware)
 
     @app.exception_handler(ApiError)
     async def api_error(request: Request, exc: ApiError):
@@ -85,7 +90,8 @@ def create_app() -> FastAPI:
         e = err("INTERNAL_ERROR")
         return _error(500, e.error_code, e.message, None, getattr(request.state, "request_id", None))
 
-    for r in (auth.router, complaints.router, media.router, authority.router, public.router, admin.router, misc.router, geo.router):
+    for r in (auth.router, complaints.router, media.router, authority.router, public.router, admin.router, admin_config.router, governance.admin_router,
+              governance.staff_router, governance.public_router, demo.router, misc.router, geo.router):
         app.include_router(r)
     return app
 

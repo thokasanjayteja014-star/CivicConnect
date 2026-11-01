@@ -4,9 +4,10 @@ from sqlalchemy.orm import Session
 
 from app import audit
 from app.core.db import get_db
+from app.core.environment import current_env
 from app.core.errors import err
 from app.core.ratelimit import rate_limit
-from app.models import Department, User
+from app.models import Department, DepartmentUnit, User
 from app.models.enums import AccountStatus, Role
 from app.schemas import LoginRequest, MeOut, PreferencesUpdate, RegisterRequest, TokenOut
 from app.security import create_access_token, hash_password, verify_password
@@ -26,6 +27,9 @@ def me_out(db: Session, user: User) -> MeOut:
         department_id=actor.department_id,
         department_name=dept.name if dept else None,
         officer_id=actor.officer_id,
+        unit_id=actor.unit_id,
+        jurisdiction_name=(db.get(DepartmentUnit, actor.unit_id).jurisdiction.name if actor.unit_id else None),
+        environment=current_env(),
         permissions=perms,
     )
 
