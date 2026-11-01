@@ -342,7 +342,7 @@ This starts three containers: `db` (PostgreSQL + PostGIS), `backend` (FastAPI) a
 
 | Service | URL |
 |---|---|
-| Website | http://localhost:3000 |
+| Website or live website| http://localhost:3000 orhttps://civic-connect-pearl-omega.vercel.app/  |
 | Backend API | http://localhost:8000 |
 | API docs (Swagger) | http://localhost:8000/docs |
 | Health check | http://localhost:8000/api/ready |
