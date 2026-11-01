@@ -420,6 +420,12 @@ def demo_reset():
 
 def main(argv: list[str]) -> None:
     cmd = argv[1] if len(argv) > 1 else "ensure"
+    if cmd == "ensure":
+        from app.demo_cleanup import purge_demo_from_production
+
+        removed = purge_demo_from_production()
+        if removed:
+            print(f"demo: removed leaked demo data from production ({removed} demo users/areas/departments).")
     if not get_settings().DEMO_ENABLED:
         print("demo: DEMO_ENABLED is false; nothing to do.")
         return
