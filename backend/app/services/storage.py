@@ -67,7 +67,15 @@ class S3Storage:
             aws_secret_access_key=s.MEDIA_STORAGE_SECRET_KEY or None,
             region_name=s.MEDIA_STORAGE_REGION,
             # Path-style URLs work with MinIO, Supabase Storage and Cloudflare R2.
-            config=Config(s3={"addressing_style": "path"}, signature_version="s3v4"),
+            # boto3 >= 1.36 adds CRC checksums to every upload by default; several S3-compatible
+            # services (Supabase Storage among them) reject those requests, so only send a
+            # checksum when the operation requires one.
+            config=Config(
+                s3={"addressing_style": "path"},
+                signature_version="s3v4",
+                request_checksum_calculation="when_required",
+                response_checksum_validation="when_required",
+            ),
         )
 
     def put(self, key: str, data: bytes, content_type: str) -> None:
